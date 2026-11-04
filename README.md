@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Your AirPods are now a mouse.</b><br>
-  Turn your head to point. Press the stem to click. Nod, shake, tilt — hands-free on your Mac.
+  Turn your head to point. Nod to click. Completely hands-free on your Mac.
 </p>
 
 <p align="center">
@@ -37,12 +37,12 @@ AirCursor reads the motion sensors already built into your AirPods and turns hea
 
 Other actions you can assign: double click, middle click, drag lock, recenter, App windows, the screenshot tool, and more. Shortcuts: **⌃⌥T** pause · **⌃⌥S** scroll mode · **⌃⌥C** recenter · **⌃⌥D** drag.
 
-### A guided tour that lets you feel it
+### A one-minute guided tour
 
-On first launch AirCursor walks you through setup, then has you **try every move live**: touch the dots with your head, click a button with the stem, nod at a target, scroll a list, pause and resume, then tune the feel on a drawing canvas. A 3D pair of earbuds mirrors your head in real time the whole way through.
+On first launch AirCursor takes you through two permissions and connecting your AirPods, then has you **try it once for real**: point at a button with your head and click it with a nod. While you do that, it learns how big your natural nod is and tunes nod detection to match. A 3D pair of earbuds mirrors your head in real time the whole way through. If you leave for System Settings to grant a permission, the tour comes back and resumes on the same step.
 
 <p align="center">
-  <img src="docs/screenshots/feel.png" width="410" alt="Tune the feel">
+  <img src="docs/screenshots/tryit.png" width="410" alt="Try it: point and nod">
   <img src="docs/screenshots/done.png" width="410" alt="Cheat sheet">
 </p>
 
@@ -81,6 +81,8 @@ Motion data is processed in memory on your Mac and never stored or sent anywhere
 **The pointer doesn't move.** AirPods only send head-tracking data to the device they're *playing audio for*. If your iPhone has them, or your Mac's sound output is set to its speakers, no motion arrives. Put the AirPods in, then choose them under **Control Center › Sound**. AirCursor switches the Mac's output to your AirPods automatically when it can, and warns you when it can't.
 
 **Something else is off.** Open **Settings › Shortcuts & General › Diagnostics**. It checks every link in the chain (permissions, Bluetooth, audio route, motion samples) and marks the first one that's failing.
+
+**Nods don't click, or click by accident.** Go to **Settings › Clicks & Gestures** and adjust **Nod size needed**. The hint underneath shows how big your last nod was. Replaying the guided tour also re-tunes it automatically.
 
 **Stem presses play/pause my music instead.** macOS sends AirPods presses to the "Now Playing" app. AirCursor claims that role while tracking, but if music is playing in another app, that app may win. Head gestures always work.
 

@@ -51,7 +51,9 @@ struct MainWindowView: View {
         }
         .onAppear {
             if pane == nil { pane = controller.settings.hasCompletedOnboarding ? .pointer : .setup }
+            controller.windowVisibilityChanged()
         }
+        .onDisappear { controller.windowVisibilityChanged() }
         .alert("AirCursor", isPresented: Binding(get: { controller.lastError != nil }, set: { if !$0 { controller.clearError() } })) {
             Button("OK") { controller.clearError() }
         } message: {
@@ -364,11 +366,12 @@ struct GestureSettingsView: View {
                 ForEach([Trigger.nod, .shake, .tiltLeft, .tiltRight]) { trigger in
                     ActionPicker(trigger: trigger, action: binding(trigger))
                 }
-                LabeledSlider(title: "Nod speed needed", value: $controller.settings.gestures.nodThreshold, range: 60...250,
-                              format: { String(format: "%.0f°/s", $0) },
-                              help: "Lower = easier nods, but more accidental clicks.")
-                LabeledSlider(title: "Shake speed needed", value: $controller.settings.gestures.shakeThreshold, range: 60...250,
-                              format: { String(format: "%.0f°/s", $0) })
+                LabeledSlider(title: "Nod size needed", value: $controller.settings.gestures.nodAmplitude, range: 3...20, step: 0.5,
+                              format: { String(format: "%.1f°", $0) },
+                              help: controller.lastNodDepth.map { String(format: "Your last nod was %.1f°. Lower = easier nods, but more accidental clicks.", $0) }
+                                ?? "Lower = easier nods, but more accidental clicks. The guided tour tunes this to your nod.")
+                LabeledSlider(title: "Shake size needed", value: $controller.settings.gestures.shakeAmplitude, range: 4...25, step: 0.5,
+                              format: { String(format: "%.1f°", $0) })
                 LabeledSlider(title: "Tilt angle", value: $controller.settings.gestures.tiltAngle, range: 10...40,
                               format: { String(format: "%.0f°", $0) })
                 LabeledSlider(title: "Tilt hold", value: $controller.settings.gestures.tiltHold, range: 0.1...1.0,

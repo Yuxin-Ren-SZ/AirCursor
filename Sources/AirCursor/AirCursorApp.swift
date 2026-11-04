@@ -12,7 +12,7 @@ struct AirCursorApp: App {
                 .environmentObject(controller)
                 .environmentObject(controller.pairing)
         } label: {
-            Image(systemName: controller.menuBarSymbol)
+            MenuBarLabel(controller: controller)
         }
         .menuBarExtraStyle(.window)
 
@@ -36,6 +36,20 @@ struct AirCursorApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.center)
         .defaultLaunchBehavior(AppController.shared.settings.hasCompletedOnboarding && DebugSnapshot.directory == nil ? .suppressed : .presented)
+    }
+}
+
+/// The menu bar icon. It's always alive, so it also hands AppController a way to
+/// open SwiftUI windows from non-view code.
+private struct MenuBarLabel: View {
+    @ObservedObject var controller: AppController
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: controller.menuBarSymbol)
+            .onAppear {
+                controller.windowOpener = { id in openWindow(id: id) }
+            }
     }
 }
 

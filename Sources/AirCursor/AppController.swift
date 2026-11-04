@@ -45,6 +45,8 @@ final class AppController: ObservableObject {
     @Published private(set) var lastTriggerDescription: String?
     /// Every handled trigger, for the guided tour to react to.
     @Published private(set) var lastTriggerEvent: TriggerEvent?
+    /// Depth of the most recent nod, in degrees (shown next to the nod setting).
+    @Published private(set) var lastNodDepth: Double?
     @Published private(set) var pairedHeadphones: [HeadphoneDevice] = []
     @Published private(set) var busyDeviceID: String?
     @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -86,6 +88,9 @@ final class AppController: ObservableObject {
     private var lastLivePublish: TimeInterval = 0
     private var motionRequested = false
     private var didAutoStart = false
+    /// Non-nil while the tour is learning how big the user's nods are.
+    private var nodCalibration: [Double]?
+    private static let calibrationNodAmplitude = 4.0
     private var sampleCount = 0
     private var housekeepingTicks = 0
     private var motionStartedAt: TimeInterval?
@@ -224,7 +229,14 @@ final class AppController: ObservableObject {
         }
     }
 
+    /// Current guided-tour step, persisted so the tour resumes after a relaunch or a
+    /// trip to System Settings.
+    @Published var tourStep: Int = UserDefaults.standard.integer(forKey: "AirCursor.tourStep") {
+        didSet { UserDefaults.standard.set(tourStep, forKey: "AirCursor.tourStep") }
+    }
+
     func completeOnboarding() {
+        tourStep = 0
         settings.hasCompletedOnboarding = true
         if accessibilityTrusted { setTracking(true, announce: false) }
         toast("You’re all set — AirCursor lives in the menu bar", symbol: "cursorarrow.motionlines")
@@ -295,6 +307,32 @@ final class AppController: ObservableObject {
 
     func clearError() { lastError = nil }
 
+    // MARK: Nod calibration
+
+    /// While active, smaller nods are accepted and their depths recorded.
+    func beginNodCalibration() {
+        guard nodCalibration == nil else { return }
+        nodCalibration = []
+        gestures.settings.nodAmplitude = min(settings.gestures.nodAmplitude, Self.calibrationNodAmplitude)
+        Diagnostics.log.notice("Nod calibration started")
+    }
+
+    /// Sets the nod threshold to just over half the user's typical nod, so their
+    /// natural nod always registers but small pointer corrections don't.
+    func endNodCalibration() {
+        guard let depths = nodCalibration else { return }
+        nodCalibration = nil
+        guard !depths.isEmpty else {
+            gestures.settings = settings.gestures
+            return
+        }
+        let median = depths.sorted()[depths.count / 2]
+        let tuned = (min(max(median * 0.55, 4), 14) * 2).rounded() / 2
+        Diagnostics.log.notice("Nod calibration: median \(String(format: "%.1f", median), privacy: .public)° → threshold \(String(format: "%.1f", tuned), privacy: .public)°")
+        settings.gestures.nodAmplitude = tuned
+        gestures.settings = settings.gestures
+    }
+
     // MARK: Services orchestration
 
     private var motionNeeded: Bool {
@@ -349,6 +387,9 @@ final class AppController: ObservableObject {
 
     private func applySettings() {
         gestures.settings = settings.gestures
+        if nodCalibration != nil {
+            gestures.settings.nodAmplitude = min(settings.gestures.nodAmplitude, Self.calibrationNodAmplitude)
+        }
         dwell.settings = settings.dwell
         if !settings.dwell.enabled { cursorOverlay.hide() }
         updateServices()
@@ -432,14 +473,50 @@ final class AppController: ObservableObject {
     }
 
     private func refreshPermissions() {
+        var granted = false
         let trusted = EventSynthesizer.isTrusted
         if trusted != accessibilityTrusted {
             accessibilityTrusted = trusted
+            granted = granted || trusted
             if !trusted, trackingEnabled { setTracking(false) }
         }
         let auth = HeadphoneMotionService.authorizationStatus
-        if auth != motionAuthorization { motionAuthorization = auth; updateServices() }
+        if auth != motionAuthorization {
+            motionAuthorization = auth
+            granted = granted || auth == .authorized
+            updateServices()
+        }
         autoStartIfReady()
+        // Granting Accessibility happens in System Settings, which buries our window.
+        // Bring the tour back so setup continues right where the user left it.
+        if granted, !settings.hasCompletedOnboarding { showTour() }
+    }
+
+    // MARK: Windows
+
+    /// Set by the menu bar label, which can call SwiftUI's openWindow.
+    var windowOpener: ((String) -> Void)?
+
+    func showTour() {
+        windowOpener?(WindowID.tour)
+        NSApp.activate()
+        DispatchQueue.main.async {
+            NSApp.windows.first { $0.title == "Welcome to AirCursor" }?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// AirCursor is a menu bar app, but while one of its windows is open it shows in the
+    /// Dock and ⌘-Tab so the window can't get lost behind other apps.
+    func windowVisibilityChanged() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            let titles: Set<String> = ["AirCursor", "Welcome to AirCursor"]
+            let anyOpen = NSApp.windows.contains { $0.isVisible && titles.contains($0.title) }
+            let policy: NSApplication.ActivationPolicy = anyOpen ? .regular : .accessory
+            if NSApp.activationPolicy() != policy {
+                NSApp.setActivationPolicy(policy)
+                if anyOpen { NSApp.activate() }
+            }
+        }
     }
 
     private func headphonesChanged(connected: Bool) {
@@ -480,14 +557,21 @@ final class AppController: ObservableObject {
             if motionAuthorization != .authorized { refreshPermissions() }
         }
 
-        guard let rates = differentiator.push(sample) else { return }
-        let rollDegrees = AngleMath.degrees(sample.roll)
-
-        if let event = gestures.process(rates: rates, rollDegrees: rollDegrees, enabled: settings.actions.enabledHeadGestures) {
+        var enabled = settings.actions.enabledHeadGestures
+        if nodCalibration != nil { enabled.insert(.nod) }
+        if let event = gestures.process(sample, enabled: enabled) {
+            Diagnostics.log.notice("Gesture \(event.gesture.rawValue, privacy: .public) (\(String(format: "%.1f", event.magnitude), privacy: .public)°)")
+            if event.gesture == .nod {
+                lastNodDepth = event.magnitude
+                nodCalibration?.append(event.magnitude)
+            }
             // Convert from the sensor clock to the host clock used by the cursor history.
             let start = event.startTime + (hostNow - sample.timestamp)
             handle(trigger: Trigger(event.gesture), gestureStart: start)
         }
+
+        guard let rates = differentiator.push(sample) else { return }
+        let rollDegrees = AngleMath.degrees(sample.roll)
 
         if trackingEnabled {
             smoother.setTarget(PointerMapper.cursorVelocity(rates: rates, settings: settings.pointer), at: hostNow)

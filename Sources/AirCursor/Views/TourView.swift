@@ -4,20 +4,19 @@ import AirCursorCore
 
 // MARK: - Steps
 
+/// Deliberately short: set up, feel it once, see the cheat sheet. Everything else
+/// is discoverable in Settings.
 enum TourStep: Int, CaseIterable, Identifiable {
-    case welcome, permissions, connect, move, click, rightClick, nod, scroll, pause, feel, done
+    case welcome, permissions, connect, tryIt, done
 
     var id: Int { rawValue }
-
-    var isPractice: Bool { rawValue >= TourStep.move.rawValue && self != .done }
 
     var eyebrow: String {
         switch self {
         case .welcome: "Welcome"
-        case .permissions: "Setup · 1 of 2"
-        case .connect: "Setup · 2 of 2"
-        case .move, .click, .rightClick, .nod, .scroll, .pause, .feel:
-            "Practice · \(rawValue - TourStep.move.rawValue + 1) of 7"
+        case .permissions: "Step 1 of 3"
+        case .connect: "Step 2 of 3"
+        case .tryIt: "Step 3 of 3"
         case .done: "All set"
         }
     }
@@ -25,14 +24,16 @@ enum TourStep: Int, CaseIterable, Identifiable {
 
 // MARK: - Tour
 
-/// First-run guided tour: set up, then *experience* every interaction live.
+/// First-run guided tour. Progress lives in AppController (persisted), so leaving for
+/// System Settings and coming back resumes on the same step.
 struct TourView: View {
     @EnvironmentObject private var controller: AppController
     @EnvironmentObject private var pairing: PairingService
     @Environment(\.dismissWindow) private var dismissWindow
 
-    @State private var step: TourStep = .welcome
-    @State private var completed: Set<TourStep> = []
+    @State private var triedIt = false
+
+    private var step: TourStep { TourStep(rawValue: controller.tourStep) ?? .welcome }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -63,11 +64,23 @@ struct TourView: View {
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         .onAppear {
             NSApp.activate()
-            controller.refreshDevices()
+            controller.windowVisibilityChanged()
         }
+        .onDisappear { controller.windowVisibilityChanged() }
         .onReceive(NotificationCenter.default.publisher(for: .tourShowStep)) { note in
-            if let raw = note.object as? Int, let s = TourStep(rawValue: raw) { step = s }
+            if let raw = note.object as? Int { controller.tourStep = raw }
         }
+        // Both permissions granted → move on by itself.
+        .onChange(of: permissionsGranted) { _, granted in
+            guard granted, step == .permissions else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                if step == .permissions { go(1) }
+            }
+        }
+    }
+
+    private var permissionsGranted: Bool {
+        controller.accessibilityTrusted && controller.motionAuthorization == .authorized
     }
 
     @ViewBuilder private var content: some View {
@@ -75,13 +88,11 @@ struct TourView: View {
         case .welcome: WelcomeStep()
         case .permissions: PermissionsStep()
         case .connect: ConnectStep()
-        case .move: MoveStep(done: done(.move))
-        case .click: ClickStep(done: done(.click))
-        case .rightClick: RightClickStep(done: done(.rightClick))
-        case .nod: NodStep(done: done(.nod))
-        case .scroll: ScrollStep(done: done(.scroll))
-        case .pause: PauseStep(done: done(.pause))
-        case .feel: FeelStep()
+        case .tryIt: TryItStep(done: {
+            guard !triedIt else { return }
+            NSSound(named: "Glass")?.play()
+            withAnimation(.spring(duration: 0.35)) { triedIt = true }
+        })
         case .done: DoneStep()
         }
     }
@@ -99,8 +110,8 @@ struct TourView: View {
                     .padding(.leading, 12)
             }
             Spacer()
-            if step.isPractice, !canContinue {
-                Button("Skip this one") { go(1) }
+            if step == .tryIt, !triedIt {
+                Button("Skip") { go(1) }
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
                     .padding(.trailing, 8)
@@ -126,24 +137,16 @@ struct TourView: View {
 
     private var canContinue: Bool {
         switch step {
-        case .welcome, .feel, .done: true
-        case .permissions: controller.accessibilityTrusted && controller.motionAuthorization == .authorized
+        case .welcome, .done: true
+        case .permissions: permissionsGranted
         case .connect: controller.motionStreaming
-        default: completed.contains(step)
-        }
-    }
-
-    private func done(_ s: TourStep) -> () -> Void {
-        {
-            guard !completed.contains(s) else { return }
-            NSSound(named: "Glass")?.play()
-            withAnimation(.spring(duration: 0.35)) { _ = completed.insert(s) }
+        case .tryIt: triedIt
         }
     }
 
     private func go(_ delta: Int) {
         guard let next = TourStep(rawValue: step.rawValue + delta) else { return }
-        withAnimation(.smooth(duration: 0.35)) { step = next }
+        withAnimation(.smooth(duration: 0.35)) { controller.tourStep = next.rawValue }
     }
 
     private func finish() {
@@ -330,21 +333,20 @@ private struct WelcomeStep: View {
             Text("Your AirPods\nare now a mouse.")
                 .font(.system(size: 40, weight: .bold))
                 .padding(.bottom, 14)
-            Text("Turn your head to point. Press the stem to click. Keep your hands free for everything else.")
+            Text("Turn your head to point. Nod to click. Your hands stay free for everything else.")
                 .font(.system(size: 16))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 32)
 
             VStack(alignment: .leading, spacing: 20) {
-                feature("cursorarrow.motionlines", "Point with your head", "Smooth, precise, works across all your displays.")
-                feature("hand.tap", "Click with your AirPods", "Press the stem, nod, or just hold still.")
-                feature("sparkles", "Gestures for everything", "Scroll, drag, pause, switch Spaces — your call.")
-                feature("lock", "Private by design", "Motion data never leaves your Mac. No accounts, no network.")
+                feature("cursorarrow.motionlines", "Point with your head", "Smooth and precise, across all your displays.")
+                feature("hand.tap", "Click without touching", "A small nod clicks. So does a stem press.")
+                feature("lock", "Private by design", "Motion data never leaves your Mac.")
             }
 
             Spacer()
-            Text("The next couple of minutes walk you through setup and let you try every move.")
+            Text("Takes about a minute: two permissions, put your AirPods in, try it once.")
                 .font(.callout)
                 .foregroundStyle(.tertiary)
         }
@@ -550,383 +552,93 @@ private struct ConnectStep: View {
     }
 }
 
-// MARK: - Practice: move
+// MARK: - Try it
 
-private struct MoveStep: View {
+/// One short, real task: point at a button that hops around, click it three times —
+/// by nodding or pressing the stem. Quietly learns the size of the user's nod.
+private struct TryItStep: View {
     @EnvironmentObject private var controller: AppController
     let done: () -> Void
-    @State private var hit: Set<Int> = []
 
-    private let spots: [CGPoint] = [
-        CGPoint(x: 0.12, y: 0.18), CGPoint(x: 0.86, y: 0.16), CGPoint(x: 0.5, y: 0.5),
-        CGPoint(x: 0.16, y: 0.84), CGPoint(x: 0.84, y: 0.82),
-    ]
+    @State private var hits = 0
+    @State private var hovering = false
+    @State private var usedNod = false
+    @State private var usedStem = false
+
+    private let spots: [CGPoint] = [CGPoint(x: 0.5, y: 0.45), CGPoint(x: 0.2, y: 0.22), CGPoint(x: 0.8, y: 0.72)]
+    private let goal = 3
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            StepHeader(
-                title: "Point with your head",
-                subtitle: "Turn your head to touch each dot. Slow turns are precise; quick turns travel far. Hit an edge? Pause, re‑center your head, resume — like lifting a mouse."
-            )
+            StepHeader(title: "Point, then click — hands‑free", subtitle: subtitle)
             TrackingHint()
             PlayArea {
                 GeometryReader { geo in
-                    ForEach(spots.indices, id: \.self) { i in
-                        let on = hit.contains(i)
-                        ZStack {
-                            Circle()
-                                .fill(on ? Color.green : Color.accentColor.opacity(0.15))
-                            Circle()
-                                .strokeBorder(on ? Color.green : Color.accentColor, lineWidth: 2)
-                            if on {
-                                Image(systemName: "checkmark").font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
-                            }
-                        }
-                        .frame(width: 46, height: 46)
-                        .scaleEffect(on ? 1.15 : 1)
-                        .overlay(PointerTarget(onHover: { inside in if inside { touch(i) } }))
-                        .position(x: geo.size.width * spots[i].x, y: geo.size.height * spots[i].y)
-                    }
-                }
-            }
-            HStack {
-                if hit.count == spots.count {
-                    SuccessBadge(text: "All five — nicely done")
-                } else {
-                    Text("\(hit.count) of \(spots.count)").foregroundStyle(.secondary).monospacedDigit()
-                }
-                Spacer()
-                Text("Speed").foregroundStyle(.secondary)
-                Slider(value: $controller.settings.pointer.sensitivity, in: 0.2...4).frame(width: 160)
-            }
-            .padding(.top, 12)
-        }
-    }
-
-    private func touch(_ i: Int) {
-        guard !hit.contains(i) else { return }
-        withAnimation(.spring(duration: 0.3)) { _ = hit.insert(i) }
-        if hit.count == spots.count { done() }
-    }
-}
-
-// MARK: - Practice: click
-
-private struct ClickStep: View {
-    @EnvironmentObject private var controller: AppController
-    let done: () -> Void
-    @State private var clicks = 0
-    @State private var hovering = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            StepHeader(
-                title: "Click with your AirPods",
-                subtitle: "Point at the button, then \(controller.howTo(.leftClick) ?? "click"). Click it twice to finish."
-            )
-            TrackingHint()
-            PlayArea {
-                VStack(spacing: 18) {
-                    Text(clicks >= 2 ? "🎉" : "Click me")
-                        .font(.system(size: 22, weight: .semibold))
+                    let finished = hits >= goal
+                    let spot = spots[min(hits, spots.count - 1)]
+                    Text(finished ? "Done!" : "Click me")
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: 200, height: 76)
-                        .background(RoundedRectangle(cornerRadius: 20).fill(clicks >= 2 ? Color.green : Color.accentColor))
-                        .scaleEffect(hovering ? 1.06 : 1)
-                        .shadow(color: Color.accentColor.opacity(hovering ? 0.5 : 0), radius: 16)
+                        .frame(width: 150, height: 58)
+                        .background(RoundedRectangle(cornerRadius: 16).fill(finished ? Color.green : Color.accentColor))
+                        .scaleEffect(hovering && !finished ? 1.08 : 1)
+                        .shadow(color: Color.accentColor.opacity(hovering ? 0.55 : 0), radius: 14)
                         .overlay(PointerTarget(
                             onHover: { h in withAnimation(.spring(duration: 0.2)) { hovering = h } },
                             onClick: { button, _ in
-                                guard button == .left else { return }
-                                withAnimation(.spring(duration: 0.25)) { clicks += 1 }
-                                if clicks >= 2 { done() }
+                                guard button == .left, hits < goal else { return }
+                                withAnimation(.spring(duration: 0.4)) { hits += 1 }
+                                if hits >= goal { done() }
                             }
                         ))
-                    Text(clicks == 0 ? "The click lands exactly where the pointer is." : "\(clicks) click\(clicks == 1 ? "" : "s")")
-                        .foregroundStyle(.secondary)
+                        .position(x: geo.size.width * spot.x, y: geo.size.height * spot.y)
                 }
             }
-            if clicks >= 2 { SuccessBadge(text: "You’ve got it").padding(.top, 12) }
-        }
-    }
-}
-
-// MARK: - Practice: right click
-
-private struct RightClickStep: View {
-    @EnvironmentObject private var controller: AppController
-    let done: () -> Void
-    @State private var success = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let how = controller.howTo(.rightClick) {
-                StepHeader(title: "Right‑click", subtitle: "Point at the card and \(how) to open its menu.")
-                TrackingHint()
-                PlayArea {
-                    VStack(spacing: 14) {
-                        Image(systemName: success ? "checkmark.seal.fill" : "doc.richtext")
-                            .font(.system(size: 40))
-                            .foregroundStyle(success ? Color.green : Color.accentColor)
-                        Text(success ? "Context menu opened" : "Right‑click me")
-                            .font(.system(size: 17, weight: .semibold))
-                    }
-                    .frame(width: 220, height: 160)
-                    .background(RoundedRectangle(cornerRadius: 18).fill(.background))
-                    .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-                    .overlay(PointerTarget(onClick: { button, _ in
-                        guard button == .right else { return }
-                        withAnimation(.spring(duration: 0.3)) { success = true }
-                        done()
-                    }))
-                }
-                if success { SuccessBadge(text: "Right‑click works").padding(.top, 12) }
-            } else {
-                StepHeader(title: "Right‑click", subtitle: "Right‑click isn’t assigned to any gesture right now. You can assign it in Settings › Clicks & Gestures.")
+            HStack(spacing: 10) {
+                chip("Nod", symbol: "arrow.down.and.line.horizontal.and.arrow.up", used: usedNod)
+                chip("Stem press", symbol: "hand.tap", used: usedStem)
                 Spacer()
+                if hits >= goal {
+                    SuccessBadge(text: "You’ve got it")
+                } else {
+                    Text("\(hits) of \(goal)").foregroundStyle(.secondary).monospacedDigit()
+                }
             }
-        }
-        .onAppear { if controller.howTo(.rightClick) == nil { done() } }
-    }
-}
-
-// MARK: - Practice: nod
-
-private struct NodStep: View {
-    @EnvironmentObject private var controller: AppController
-    let done: () -> Void
-    @State private var success = false
-    @State private var hovering = false
-    @State private var misses = 0
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if controller.settings.actions[.nod].isClick {
-                StepHeader(
-                    title: "Nod to click",
-                    subtitle: "Point at the target and give a quick, firm nod — like a confident “yes”. The click lands where you pointed before the nod."
-                )
-                TrackingHint()
-                PlayArea {
-                    ZStack {
-                        ForEach(0..<3) { ring in
-                            Circle()
-                                .strokeBorder((success ? Color.green : Color.accentColor).opacity(0.25 + Double(ring) * 0.25), lineWidth: 3)
-                                .frame(width: CGFloat(150 - ring * 45), height: CGFloat(150 - ring * 45))
-                        }
-                        Image(systemName: success ? "checkmark" : "arrow.down.and.line.horizontal.and.arrow.up")
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundStyle(success ? Color.green : Color.accentColor)
-                    }
-                    .scaleEffect(hovering ? 1.06 : 1)
-                    .overlay(PointerTarget(onHover: { h in withAnimation(.spring(duration: 0.2)) { hovering = h } }))
-                }
-                HStack {
-                    if success {
-                        SuccessBadge(text: "Perfect nod")
-                    } else if misses > 0 {
-                        Text("Nod detected — point at the target first.").foregroundStyle(.secondary)
-                    } else {
-                        Text("Too sensitive or not sensitive enough? Adjust it in Settings › Clicks & Gestures.")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                .padding(.top, 12)
-            } else {
-                StepHeader(title: "Nod to click", subtitle: "Nodding isn’t set to click right now. You can change that in Settings › Clicks & Gestures.")
+            .padding(.top, 12)
+            HStack {
+                Toggle("Also click when I hold still (dwell)", isOn: $controller.settings.dwell.enabled)
                 Spacer()
+                Text("Speed").foregroundStyle(.secondary)
+                Slider(value: $controller.settings.pointer.sensitivity, in: 0.2...4).frame(width: 150)
             }
+            .font(.callout)
+            .padding(.top, 10)
         }
+        .onAppear { controller.beginNodCalibration() }
+        .onDisappear { controller.endNodCalibration() }
         .onChange(of: controller.lastTriggerEvent) { _, event in
-            guard let event, event.trigger == .nod, !success else { return }
-            if hovering {
-                withAnimation(.spring(duration: 0.3)) { success = true }
-                done()
-            } else {
-                misses += 1
-            }
-        }
-        .onAppear { if !controller.settings.actions[.nod].isClick { done() } }
-    }
-}
-
-// MARK: - Practice: scroll
-
-private struct ScrollStep: View {
-    @EnvironmentObject private var controller: AppController
-    let done: () -> Void
-    @State private var entered = false
-    @State private var reachedEnd = false
-
-    private let lines = [
-        "Scroll mode turns head movement into scrolling.",
-        "Look down to move down the page.",
-        "Look up to go back up.",
-        "Turn left or right to scroll sideways.",
-        "The farther and faster you look, the faster it scrolls.",
-        "Hold your head still to stop.",
-        "Tip: you can change scroll speed in Settings › Pointer.",
-        "Tip: it works in any app — Safari, Mail, Notes, Finder.",
-        "Keep going…",
-        "Almost there…",
-        "A little more…",
-        "You made it to the end 🎉",
-    ]
-
-    var body: some View {
-        let toggle = controller.howTo(.toggleScrollMode) ?? "press \(HotKey.scrollMode.display)"
-        VStack(alignment: .leading, spacing: 0) {
-            StepHeader(title: "Scroll hands‑free", subtitle: "Point at the list, then follow the three steps.")
-            TrackingHint()
-            HStack(alignment: .top, spacing: 18) {
-                VStack(alignment: .leading, spacing: 14) {
-                    check(entered, "1. \(toggle.capitalizedFirst) to enter scroll mode")
-                    check(reachedEnd, "2. Look down to reach the end")
-                    check(entered && reachedEnd && controller.mode == .pointer, "3. \(toggle.capitalizedFirst) again to go back")
-                    Spacer()
-                    Text("Mode: \(controller.mode.title)")
-                        .font(.callout.weight(.medium))
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Capsule().fill(controller.mode == .scroll ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.12)))
-                }
-                .frame(width: 230, alignment: .leading)
-
-                PlayArea {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 22) {
-                            ForEach(lines.indices, id: \.self) { i in
-                                Text(lines[i])
-                                    .font(.system(size: 17, weight: i == lines.count - 1 ? .bold : .regular))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                        .padding(22)
-                    }
-                    .onScrollGeometryChange(for: Bool.self) { geo in
-                        geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 24
-                    } action: { _, atEnd in
-                        if atEnd, entered, !reachedEnd { withAnimation { reachedEnd = true } }
-                    }
-                }
-            }
-        }
-        .onChange(of: controller.mode) { _, mode in
-            if mode == .scroll { withAnimation { entered = true } }
-            if mode == .pointer, entered, reachedEnd { done() }
+            guard let event else { return }
+            if event.trigger == .nod { withAnimation { usedNod = true } }
+            if event.trigger.isStem { withAnimation { usedStem = true } }
         }
     }
 
-    private func check(_ on: Bool, _ text: String) -> some View {
-        Label {
-            Text(text).font(.system(size: 14)).fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(on ? Color.green : Color.secondary)
-        }
-    }
-}
-
-// MARK: - Practice: pause
-
-private struct PauseStep: View {
-    @EnvironmentObject private var controller: AppController
-    let done: () -> Void
-    @State private var paused = false
-    @State private var resumed = false
-
-    var body: some View {
-        let how = controller.howTo(.toggleTracking) ?? "press \(HotKey.toggleTracking.display)"
-        VStack(alignment: .leading, spacing: 0) {
-            StepHeader(
-                title: "Pause anytime",
-                subtitle: "Pausing hands the pointer back to your trackpad and the stem back to your music. Do it before taking your AirPods out."
-            )
-            PlayArea {
-                VStack(spacing: 22) {
-                    Image(systemName: controller.trackingEnabled ? "cursorarrow.motionlines" : "pause.circle.fill")
-                        .font(.system(size: 54))
-                        .foregroundStyle(controller.trackingEnabled ? Color.accentColor : Color.orange)
-                        .contentTransition(.symbolEffect(.replace))
-                    VStack(alignment: .leading, spacing: 12) {
-                        stepRow(paused, "\(how.capitalizedFirst) to pause")
-                        stepRow(resumed, "\(how.capitalizedFirst) again to resume")
-                    }
-                    Text("Keyboard: \(HotKey.toggleTracking.display) works in any app.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            if resumed { SuccessBadge(text: "Paused and back — perfect").padding(.top, 12) }
-        }
-        .onChange(of: controller.trackingEnabled) { _, on in
-            if !on { withAnimation { paused = true } }
-            if on, paused, !resumed {
-                withAnimation { resumed = true }
-                done()
-            }
+    private var subtitle: String {
+        let nodClicks = controller.settings.actions[.nod].isClick
+        let stem = controller.settings.actions[.stemSingle].isClick
+        switch (nodClicks, stem) {
+        case (true, true): return "Turn your head to put the pointer on the button, then give a small nod — or press the stem."
+        case (true, false): return "Turn your head to put the pointer on the button, then give a small nod."
+        default: return "Turn your head to put the pointer on the button, then \(controller.howTo(.leftClick) ?? "click")."
         }
     }
 
-    private func stepRow(_ on: Bool, _ text: String) -> some View {
-        Label {
-            Text(text).font(.system(size: 15))
-        } icon: {
-            Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(on ? Color.green : Color.secondary)
-        }
-    }
-}
-
-// MARK: - Practice: feel
-
-private struct FeelStep: View {
-    @EnvironmentObject private var controller: AppController
-    @State private var trail: [(point: CGPoint, time: Date)] = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            StepHeader(
-                title: "Make it feel right",
-                subtitle: "Draw a circle, then a figure eight. Tune it until the line feels like it’s coming from you."
-            )
-            HStack(alignment: .top, spacing: 18) {
-                PlayArea {
-                    TimelineView(.animation) { context in
-                        Canvas { ctx, _ in
-                            let now = context.date
-                            let points = trail.filter { now.timeIntervalSince($0.time) < 1.6 }
-                            guard points.count > 1 else { return }
-                            for i in 1..<points.count {
-                                let age = now.timeIntervalSince(points[i].time) / 1.6
-                                var path = Path()
-                                path.move(to: points[i - 1].point)
-                                path.addLine(to: points[i].point)
-                                ctx.stroke(path, with: .color(Color.accentColor.opacity(1 - age)),
-                                           style: StrokeStyle(lineWidth: 5 * (1 - age) + 1, lineCap: .round))
-                            }
-                        }
-                    }
-                    .overlay(PointerTarget(onMove: { p in
-                        trail.append((p, Date()))
-                        if trail.count > 240 { trail.removeFirst(trail.count - 240) }
-                    }))
-                    .overlay(alignment: .topLeading) {
-                        Text("Draw here").font(.caption).foregroundStyle(.tertiary).padding(12)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    LabeledSlider(title: "Speed", value: $controller.settings.pointer.sensitivity, range: 0.2...4,
-                                  format: { String(format: "%.1f×", $0) })
-                    LabeledSlider(title: "Smoothing", value: $controller.settings.pointer.smoothing, range: 0...0.9,
-                                  format: { String(format: "%.0f%%", $0 * 100) })
-                    LabeledSlider(title: "Steadiness", value: $controller.settings.pointer.deadzone, range: 0...20,
-                                  format: { String(format: "%.0f°/s", $0) },
-                                  help: "Raise if the pointer creeps while you hold still.")
-                    Toggle("Dwell click (hold still to click)", isOn: $controller.settings.dwell.enabled)
-                }
-                .frame(width: 240)
-            }
-        }
+    private func chip(_ title: String, symbol: String, used: Bool) -> some View {
+        Label(title, systemImage: used ? "checkmark.circle.fill" : symbol)
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(used ? Color.green.opacity(0.18) : Color.secondary.opacity(0.12)))
+            .foregroundStyle(used ? Color.green : Color.secondary)
     }
 }
 
@@ -939,7 +651,7 @@ private struct DoneStep: View {
         VStack(alignment: .leading, spacing: 0) {
             StepHeader(
                 title: "You’re ready.",
-                subtitle: "AirCursor lives in your menu bar. Everything below can be remapped in Settings."
+                subtitle: "AirCursor lives in your menu bar. Here’s everything you can do — remap any of it in Settings, and replay this tour from the menu bar."
             )
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
                 ForEach(bindings, id: \.0) { trigger, action in

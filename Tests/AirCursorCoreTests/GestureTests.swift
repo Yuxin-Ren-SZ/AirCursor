@@ -3,73 +3,116 @@ import XCTest
 
 final class GestureTests: XCTestCase {
     private let all = Set(HeadGesture.allCases)
+    private let hz = 25.0
 
-    /// Feeds (pitchRate, yawRate) pairs at 25 Hz and returns every gesture fired.
-    private func run(
-        _ detector: inout GestureDetector,
-        rates: [(pitch: Double, yaw: Double)],
-        roll: Double = 0,
+    /// Feeds angle tracks (degrees) at 25 Hz; returns every gesture fired.
+    private func feed(
+        _ d: inout GestureDetector,
+        pitch: [Double],
+        yaw: [Double]? = nil,
+        roll: [Double]? = nil,
         start: Double = 0,
         enabled: Set<HeadGesture>? = nil
     ) -> [GestureEvent] {
         var out: [GestureEvent] = []
-        for (i, r) in rates.enumerated() {
-            let t = start + Double(i) * 0.04
-            let rates = AngularRates(timestamp: t, yaw: r.yaw, pitch: r.pitch, roll: 0)
-            if let e = detector.process(rates: rates, rollDegrees: roll, enabled: enabled ?? all) { out.append(e) }
+        for i in pitch.indices {
+            let s = MotionSample(
+                timestamp: start + Double(i) / hz,
+                yaw: AngleMath.radians(yaw?[i] ?? 0),
+                pitch: AngleMath.radians(pitch[i]),
+                roll: AngleMath.radians(roll?[i] ?? 0)
+            )
+            if let e = d.process(s, enabled: enabled ?? all) { out.append(e) }
         }
         return out
     }
 
-    func testNodDetected() {
+    /// Flat, then a smooth dip of `depth` degrees lasting `duration` seconds, then flat.
+    private func dip(_ depth: Double, over duration: Double, lead: Int = 5, tail: Int = 8) -> [Double] {
+        let n = max(2, Int(duration * hz))
+        let curve = (0...n).map { i in depth * sin(.pi * Double(i) / Double(n)) }
+        return Array(repeating: 0, count: lead) + curve + Array(repeating: 0, count: tail)
+    }
+
+    func testNaturalNodDetected() {
         var d = GestureDetector()
-        let events = run(&d, rates: [(0, 0), (-150, 10), (-180, 0), (40, 0), (160, 5), (0, 0)])
+        let events = feed(&d, pitch: dip(-12, over: 0.4))
         XCTAssertEqual(events.map(\.gesture), [.nod])
-        XCTAssertEqual(events.first?.startTime ?? -1, 0.04, accuracy: 1e-9)
+        XCTAssertEqual(events.first?.magnitude ?? 0, 12, accuracy: 1)
+        // Starts at (or just before) the beginning of the dip, for cursor restore.
+        XCTAssertLessThanOrEqual(events.first?.startTime ?? 99, 5 / hz + 0.01)
     }
 
-    func testNodWorksInEitherDirection() {
+    func testGentleNodDetected() {
         var d = GestureDetector()
-        XCTAssertEqual(run(&d, rates: [(160, 0), (-150, 0)]).map(\.gesture), [.nod])
+        XCTAssertEqual(feed(&d, pitch: dip(-7, over: 0.5)).map(\.gesture), [.nod])
     }
 
-    func testSlowLookDownAndUpIsNotANod() {
+    func testUpwardNodDetected() {
         var d = GestureDetector()
-        XCTAssertTrue(run(&d, rates: Array(repeating: (-60, 0), count: 10) + Array(repeating: (60, 0), count: 10)).isEmpty)
+        XCTAssertEqual(feed(&d, pitch: dip(10, over: 0.4)).map(\.gesture), [.nod])
     }
 
-    func testNodTooSlowToReturnIsIgnored() {
+    func testTinyJitterIsNotANod() {
         var d = GestureDetector()
-        let rates: [(pitch: Double, yaw: Double)] = [(-150, 0)] + Array(repeating: (0, 0), count: 20) + [(150, 0)]
-        // The late "return" starts a new candidate instead of completing a nod.
-        XCTAssertTrue(run(&d, rates: rates).isEmpty)
+        XCTAssertTrue(feed(&d, pitch: dip(-3, over: 0.3)).isEmpty)
     }
 
-    func testDiagonalMovementIsNotANod() {
+    func testSlowLookDownAndBackIsNotANod() {
         var d = GestureDetector()
-        XCTAssertTrue(run(&d, rates: [(-150, 140), (150, -140)], enabled: [.nod]).isEmpty)
+        XCTAssertTrue(feed(&d, pitch: dip(-15, over: 2.0)).isEmpty)
     }
 
-    func testShakeDetected() {
+    func testLookingDownAndStayingIsNotANod() {
         var d = GestureDetector()
-        let events = run(&d, rates: [(0, 160), (0, 170), (0, -180), (0, -160), (0, 170), (0, 0)])
-        XCTAssertEqual(events.map(\.gesture), [.shake])
+        let pitch = Array(repeating: 0.0, count: 5) + (0...10).map { -1.5 * Double($0) } + Array(repeating: -15.0, count: 30)
+        XCTAssertTrue(feed(&d, pitch: pitch).isEmpty)
     }
 
-    func testSingleQuickTurnIsNotAShake() {
+    func testDiagonalMoveIsNotANod() {
         var d = GestureDetector()
-        XCTAssertTrue(run(&d, rates: [(0, 200), (0, 200), (0, -150), (0, 0), (0, 0)]).isEmpty)
+        let pitch = dip(-10, over: 0.4)
+        let yaw = pitch.indices.map { Double($0) * 1.5 }   // sweeping sideways ~37°/s
+        XCTAssertTrue(feed(&d, pitch: pitch, yaw: yaw, enabled: [.nod]).isEmpty)
+    }
+
+    func testNodWithReboundFiresOnce() {
+        var d = GestureDetector()
+        // Real nods often overshoot upward on the way back before settling.
+        let nod = dip(-12, over: 0.4, tail: 0) + dip(6, over: 0.3, lead: 0)
+        XCTAssertEqual(feed(&d, pitch: nod).count, 1)
     }
 
     func testDisabledGesturesDoNotFire() {
         var d = GestureDetector()
-        XCTAssertTrue(run(&d, rates: [(-150, 0), (150, 0)], enabled: [.shake]).isEmpty)
+        XCTAssertTrue(feed(&d, pitch: dip(-12, over: 0.4), enabled: [.shake]).isEmpty)
     }
 
-    func testCooldownPreventsDoubleFire() {
+    func testShakeDetected() {
         var d = GestureDetector()
-        let nodTwice: [(pitch: Double, yaw: Double)] = [(-150, 0), (150, 0), (-150, 0), (150, 0)]
-        XCTAssertEqual(run(&d, rates: nodTwice).count, 1)
+        let n = Int(0.8 * hz)
+        let yaw = Array(repeating: 0.0, count: 4) + (0...n).map { 15 * sin(2 * .pi * Double($0) / (0.5 * hz)) } + Array(repeating: 0.0, count: 4)
+        let events = feed(&d, pitch: Array(repeating: 0, count: yaw.count), yaw: yaw)
+        XCTAssertEqual(events.map(\.gesture), [.shake])
+    }
+
+    func testSingleLookAsideAndBackIsNotAShake() {
+        var d = GestureDetector()
+        let yaw = dip(-25, over: 0.6)
+        XCTAssertTrue(feed(&d, pitch: Array(repeating: 0, count: yaw.count), yaw: yaw).isEmpty)
+    }
+
+    func testYawWrapAroundIsContinuous() {
+        var d = GestureDetector()
+        // Hovering around ±180° must not look like a 360° swing.
+        let yaw = (0..<30).map { i in i % 2 == 0 ? 179.0 : -179.0 }
+        XCTAssertTrue(feed(&d, pitch: Array(repeating: 0, count: yaw.count), yaw: yaw).isEmpty)
+    }
+
+    // MARK: Tilt
+
+    private func tiltRun(_ d: inout GestureDetector, rolls: [Double], start: Double = 0) -> [GestureEvent] {
+        feed(&d, pitch: Array(repeating: 0, count: rolls.count), roll: rolls, start: start)
     }
 
     func testTiltFiresOnceAfterHold() {
@@ -77,21 +120,9 @@ final class GestureTests: XCTestCase {
         s.tiltAngle = 20
         s.tiltHold = 0.3
         var d = GestureDetector(settings: s)
-        var events: [GestureEvent] = []
-        var t = 0.0
-        func feed(_ roll: Double, _ n: Int) {
-            for _ in 0..<n {
-                if let e = d.process(rates: AngularRates(timestamp: t, yaw: 0, pitch: 0, roll: 0), rollDegrees: roll, enabled: all) {
-                    events.append(e)
-                }
-                t += 0.04
-            }
-        }
-        feed(0, 5)       // establish neutral
-        feed(30, 30)     // hold tilt ~1.2 s
+        var events = tiltRun(&d, rolls: Array(repeating: 0, count: 5) + Array(repeating: 30, count: 30))
         XCTAssertEqual(events.map(\.gesture), [.tiltRight])
-        feed(0, 5)       // back to neutral re-arms
-        feed(-30, 15)
+        events += tiltRun(&d, rolls: Array(repeating: 0, count: 5) + Array(repeating: -30, count: 15), start: 35 / hz)
         XCTAssertEqual(events.map(\.gesture), [.tiltRight, .tiltLeft])
     }
 
@@ -99,46 +130,24 @@ final class GestureTests: XCTestCase {
         var s = GestureSettings()
         s.swapTiltDirection = true
         var d = GestureDetector(settings: s)
-        var fired: HeadGesture?
-        var t = 0.0
-        for roll in [0.0] + Array(repeating: 30.0, count: 20) {
-            if let e = d.process(rates: AngularRates(timestamp: t, yaw: 0, pitch: 0, roll: 0), rollDegrees: roll, enabled: all) {
-                fired = e.gesture
-            }
-            t += 0.04
-        }
-        XCTAssertEqual(fired, .tiltLeft)
-    }
-
-    func testStaleNeutralRecovers() {
-        var d = GestureDetector()
-        var t = 0.0
-        // Baseline captured at a weird angle (e.g. while inserting the AirPods)…
-        _ = d.process(rates: AngularRates(timestamp: t, yaw: 0, pitch: 0, roll: 0), rollDegrees: 50, enabled: all)
-        // …then the user sits upright for a while.
-        for _ in 0..<150 {
-            t += 0.04
-            _ = d.process(rates: AngularRates(timestamp: t, yaw: 0, pitch: 0, roll: 0), rollDegrees: 0, enabled: all)
-        }
-        XCTAssertEqual(d.relativeRoll(0), 0, accuracy: 1)
-        // And a real tilt from the new neutral still fires.
-        var fired: HeadGesture?
-        for _ in 0..<20 {
-            t += 0.04
-            if let e = d.process(rates: AngularRates(timestamp: t, yaw: 0, pitch: 0, roll: 0), rollDegrees: 30, enabled: all) { fired = e.gesture }
-        }
-        XCTAssertEqual(fired, .tiltRight)
+        XCTAssertEqual(tiltRun(&d, rolls: [0] + Array(repeating: 30, count: 20)).map(\.gesture), [.tiltLeft])
     }
 
     func testBriefTiltDoesNotFire() {
         var d = GestureDetector()
-        var t = 0.0
-        var fired = false
-        for roll in [0.0, 0, 30, 30, 0, 0] {
-            if d.process(rates: AngularRates(timestamp: t, yaw: 0, pitch: 0, roll: 0), rollDegrees: roll, enabled: all) != nil { fired = true }
-            t += 0.04
-        }
-        XCTAssertFalse(fired)
+        XCTAssertTrue(tiltRun(&d, rolls: [0, 0, 30, 30, 0, 0]).isEmpty)
+    }
+
+    func testStaleNeutralRecovers() {
+        var d = GestureDetector()
+        // Neutral captured at a weird angle (e.g. while inserting the AirPods)…
+        _ = tiltRun(&d, rolls: [50])
+        // …then the user sits upright for a while.
+        _ = tiltRun(&d, rolls: Array(repeating: 0, count: 150), start: 1 / hz)
+        XCTAssertEqual(d.relativeRoll(0), 0, accuracy: 1)
+        // A real tilt from the new neutral still fires.
+        let events = tiltRun(&d, rolls: Array(repeating: 30, count: 20), start: 151 / hz)
+        XCTAssertEqual(events.map(\.gesture), [.tiltRight])
     }
 }
 

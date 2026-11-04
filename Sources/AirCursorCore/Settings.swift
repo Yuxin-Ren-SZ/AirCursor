@@ -39,14 +39,14 @@ public struct PointerSettings: Codable, Equatable, Sendable {
 }
 
 public struct GestureSettings: Codable, Equatable, Sendable {
-    /// Pitch speed (deg/s) a nod must reach.
-    public var nodThreshold: Double = 110
-    /// Max time between the down and up halves of a nod.
-    public var nodWindow: Double = 0.55
-    /// Yaw speed (deg/s) each swing of a head shake must reach.
-    public var shakeThreshold: Double = 130
+    /// How far (degrees) the head must dip for a nod. Tuned per user by the guided tour.
+    public var nodAmplitude: Double = 6
+    /// Max time for a whole nod (down and back).
+    public var nodWindow: Double = 0.8
+    /// How far (degrees) each swing of a head shake must go.
+    public var shakeAmplitude: Double = 8
     /// Time window for the three swings of a shake.
-    public var shakeWindow: Double = 0.9
+    public var shakeWindow: Double = 1.1
     /// Roll (degrees) away from your neutral posture that counts as a tilt.
     public var tiltAngle: Double = 22
     /// How long a tilt must be held before it fires.
@@ -61,9 +61,9 @@ public struct GestureSettings: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = GestureSettings()
-        nodThreshold = c.value(.nodThreshold, default: d.nodThreshold)
+        nodAmplitude = c.value(.nodAmplitude, default: d.nodAmplitude)
         nodWindow = c.value(.nodWindow, default: d.nodWindow)
-        shakeThreshold = c.value(.shakeThreshold, default: d.shakeThreshold)
+        shakeAmplitude = c.value(.shakeAmplitude, default: d.shakeAmplitude)
         shakeWindow = c.value(.shakeWindow, default: d.shakeWindow)
         tiltAngle = c.value(.tiltAngle, default: d.tiltAngle)
         tiltHold = c.value(.tiltHold, default: d.tiltHold)

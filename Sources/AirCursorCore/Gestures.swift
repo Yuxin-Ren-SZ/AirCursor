@@ -9,22 +9,40 @@ public struct GestureEvent: Equatable, Sendable {
     /// When the movement began (sample clock), used to undo the cursor drift it caused.
     public let startTime: TimeInterval
     public let time: TimeInterval
+    /// Size of the movement in degrees (nod depth, shake swing, tilt angle).
+    public let magnitude: Double
+
+    public init(gesture: HeadGesture, startTime: TimeInterval, time: TimeInterval, magnitude: Double) {
+        self.gesture = gesture
+        self.startTime = startTime
+        self.time = time
+        self.magnitude = magnitude
+    }
 }
 
-/// Detects deliberate head gestures from angular rates.
+/// Detects deliberate head gestures from the head's *angle over time*.
 ///
-/// - Nod: a fast pitch swing followed by a fast swing back (either order) within `nodWindow`.
-/// - Shake: three alternating fast yaw swings within `shakeWindow`.
+/// Shape-based detection is far more reliable than speed thresholds: AirPods report
+/// ~25 samples/s, so the peak speed of a natural nod is often missed, but its shape —
+/// dip a few degrees, come back — always shows up.
+///
+/// - Nod: pitch leaves its starting angle by ≥ `nodAmplitude`, then returns most of
+///   the way, within `nodWindow`, with little sideways motion. Either direction.
+/// - Shake: yaw swings back and forth ≥ `shakeAmplitude` at least three times within
+///   `shakeWindow`, with little vertical motion.
 /// - Tilt: roll held beyond `tiltAngle` from the neutral posture for `tiltHold`.
 ///   Fires once, then re-arms when the head returns toward neutral.
-///
-/// Direction-agnostic nod/shake detection means it works no matter which sign
-/// convention a given AirPods model reports.
 public struct GestureDetector: Sendable {
     public var settings: GestureSettings
 
-    private var nodStart: (sign: Int, time: TimeInterval)?
-    private var shakeSwings: [(sign: Int, time: TimeInterval)] = []
+    private struct Pose {
+        let t: TimeInterval
+        let yaw: Double    // degrees, unwrapped (continuous)
+        let pitch: Double  // degrees
+    }
+
+    private var history: [Pose] = []
+    private var lastRawYaw: Double?
     private var cooldownUntil: TimeInterval = -.infinity
     private var rollBaseline: Double?
     private var tiltCandidate: (gesture: HeadGesture, since: TimeInterval)?
@@ -34,11 +52,14 @@ public struct GestureDetector: Sendable {
     /// A head held off-neutral this long is a new posture (or a stale baseline taken
     /// while the AirPods were being put in), so it becomes the new neutral.
     static let reNeutralAfter: TimeInterval = 4
-
-    /// Axis dominance: a gesture's axis must be this much faster than the other axis.
-    static let dominance = 1.3
-    /// The return swing of a nod may be a bit slower than the initial one.
-    static let nodReturnFactor = 0.7
+    /// A nod must come back at least this fraction of the way to where it started.
+    static let nodReturnFraction = 0.65
+    /// Sideways motion allowed during a nod, relative to its depth (and vice versa for shakes).
+    static let crossAxisAllowance = 0.6
+    /// Movements slower than this (deg/s at their fastest) are deliberate pointing, not gestures.
+    static let minNodSpeed = 30.0
+    static let minShakeSpeed = 50.0
+    static let historySpan: TimeInterval = 1.5
 
     public init(settings: GestureSettings = GestureSettings()) {
         self.settings = settings
@@ -58,64 +79,141 @@ public struct GestureDetector: Sendable {
     }
 
     public mutating func reset() {
-        nodStart = nil
-        shakeSwings.removeAll()
+        history.removeAll()
+        lastRawYaw = nil
         cooldownUntil = -.infinity
         resetTiltBaseline()
     }
 
-    public mutating func process(
-        rates: AngularRates,
-        rollDegrees: Double,
-        enabled: Set<HeadGesture>
-    ) -> GestureEvent? {
-        let t = rates.timestamp
-        let tilt = updateTilt(rollDegrees: rollDegrees, time: t, enabled: enabled)
+    /// Feed every motion sample (angles in radians, as CoreMotion reports them).
+    public mutating func process(_ sample: MotionSample, enabled: Set<HeadGesture>) -> GestureEvent? {
+        let t = sample.timestamp
+        let rawYaw = AngleMath.degrees(sample.yaw)
+        let pitch = AngleMath.degrees(sample.pitch)
+        let roll = AngleMath.degrees(sample.roll)
+
+        // Unwrap yaw so a turn across ±180° stays continuous; drop history after gaps.
+        if let last = history.last, t - last.t > MotionDifferentiator.maxInterval || t <= last.t {
+            history.removeAll()
+            lastRawYaw = nil
+        }
+        let yaw: Double
+        if let prev = lastRawYaw, let last = history.last {
+            yaw = last.yaw + AngleMath.wrappedDeltaDegrees(rawYaw, prev)
+        } else {
+            yaw = rawYaw
+        }
+        lastRawYaw = rawYaw
+        history.append(Pose(t: t, yaw: yaw, pitch: pitch))
+        if let first = history.first, t - first.t > Self.historySpan {
+            history.removeAll { t - $0.t > Self.historySpan }
+        }
+
+        let tilt = updateTilt(rollDegrees: roll, time: t, enabled: enabled)
 
         guard t >= cooldownUntil else { return nil }
-
-        if enabled.contains(.nod), let e = detectNod(rates) { return fire(e) }
-        if enabled.contains(.shake), let e = detectShake(rates) { return fire(e) }
+        if enabled.contains(.nod), let e = detectNod(now: t) { return fire(e) }
+        if enabled.contains(.shake), let e = detectShake(now: t) { return fire(e) }
         if let e = tilt { return fire(e) }
         return nil
     }
 
     private mutating func fire(_ event: GestureEvent) -> GestureEvent {
         cooldownUntil = event.time + settings.cooldown
-        nodStart = nil
-        shakeSwings.removeAll()
+        history.removeAll()
+        lastRawYaw = nil
         tiltCandidate = nil
         return event
     }
 
-    private mutating func detectNod(_ r: AngularRates) -> GestureEvent? {
-        let t = r.timestamp
-        if let s = nodStart, t - s.time > settings.nodWindow { nodStart = nil }
+    // MARK: Nod
 
-        let needed = nodStart == nil ? settings.nodThreshold : settings.nodThreshold * Self.nodReturnFactor
-        guard abs(r.pitch) >= needed, abs(r.pitch) > abs(r.yaw) * Self.dominance else { return nil }
-        let sign = r.pitch > 0 ? 1 : -1
+    private func detectNod(now: TimeInterval) -> GestureEvent? {
+        guard history.count >= 3, let current = history.last else { return nil }
+        let lastIndex = history.count - 1
 
-        if let s = nodStart {
-            guard sign != s.sign else { return nil }
-            nodStart = nil
-            return GestureEvent(gesture: .nod, startTime: s.time, time: t)
+        // Try every start point in the window, oldest first (earliest start = best
+        // cursor-restore point).
+        for j in 0..<(lastIndex - 1) where now - history[j].t <= settings.nodWindow {
+            let start = history[j]
+            var extreme = 0.0
+            var extremeIndex = j
+            for k in (j + 1)..<lastIndex {
+                let d = history[k].pitch - start.pitch
+                if abs(d) > abs(extreme) { extreme = d; extremeIndex = k }
+            }
+            let depth = abs(extreme)
+            guard depth >= settings.nodAmplitude, extremeIndex > j else { continue }
+
+            let remaining = abs(current.pitch - start.pitch)
+            guard remaining <= depth * (1 - Self.nodReturnFraction) else { continue }
+
+            let segment = history[j...lastIndex]
+            let yawRange = (segment.map(\.yaw).max() ?? 0) - (segment.map(\.yaw).min() ?? 0)
+            guard yawRange <= max(depth * Self.crossAxisAllowance, 3) else { continue }
+            guard peakSpeed(segment, \.pitch) >= Self.minNodSpeed else { continue }
+
+            return GestureEvent(gesture: .nod, startTime: start.t, time: now, magnitude: depth)
         }
-        nodStart = (sign, t)
         return nil
     }
 
-    private mutating func detectShake(_ r: AngularRates) -> GestureEvent? {
-        let t = r.timestamp
-        shakeSwings.removeAll { t - $0.time > settings.shakeWindow }
+    // MARK: Shake
 
-        guard abs(r.yaw) >= settings.shakeThreshold, abs(r.yaw) > abs(r.pitch) * Self.dominance else { return nil }
-        let sign = r.yaw > 0 ? 1 : -1
-        if shakeSwings.last?.sign != sign { shakeSwings.append((sign, t)) }
+    private func detectShake(now: TimeInterval) -> GestureEvent? {
+        let window = history.filter { now - $0.t <= settings.shakeWindow }
+        guard window.count >= 4, let first = window.first else { return nil }
 
-        guard shakeSwings.count >= 3, let first = shakeSwings.first else { return nil }
-        return GestureEvent(gesture: .shake, startTime: first.time, time: t)
+        var anchor = first.yaw
+        var direction = 0
+        var swings = 0
+        var largest = 0.0
+        for pose in window.dropFirst() {
+            let d = pose.yaw - anchor
+            switch direction {
+            case 0:
+                if abs(d) >= settings.shakeAmplitude {
+                    direction = d > 0 ? 1 : -1
+                    swings = 1
+                    largest = abs(d)
+                    anchor = pose.yaw
+                }
+            case 1:
+                if pose.yaw > anchor { anchor = pose.yaw }
+                else if anchor - pose.yaw >= settings.shakeAmplitude {
+                    swings += 1; largest = max(largest, anchor - pose.yaw)
+                    direction = -1; anchor = pose.yaw
+                }
+            default:
+                if pose.yaw < anchor { anchor = pose.yaw }
+                else if pose.yaw - anchor >= settings.shakeAmplitude {
+                    swings += 1; largest = max(largest, pose.yaw - anchor)
+                    direction = 1; anchor = pose.yaw
+                }
+            }
+        }
+        guard swings >= 3 else { return nil }
+
+        let pitchRange = (window.map(\.pitch).max() ?? 0) - (window.map(\.pitch).min() ?? 0)
+        guard pitchRange <= largest * Self.crossAxisAllowance else { return nil }
+        guard peakSpeed(window[...], \.yaw) >= Self.minShakeSpeed else { return nil }
+
+        return GestureEvent(gesture: .shake, startTime: first.t, time: now, magnitude: largest)
     }
+
+    private func peakSpeed(_ poses: ArraySlice<Pose>, _ axis: KeyPath<Pose, Double>) -> Double {
+        var best = 0.0
+        var previous: Pose?
+        for p in poses {
+            if let prev = previous, p.t > prev.t {
+                best = max(best, abs(p[keyPath: axis] - prev[keyPath: axis]) / (p.t - prev.t))
+            }
+            previous = p
+        }
+        return best
+    }
+
+    // MARK: Tilt
 
     private mutating func updateTilt(rollDegrees: Double, time t: TimeInterval, enabled: Set<HeadGesture>) -> GestureEvent? {
         guard let base = rollBaseline else {
@@ -162,7 +260,7 @@ public struct GestureDetector: Sendable {
         tiltLatched = true
         tiltCandidate = nil
         guard enabled.contains(gesture), t >= cooldownUntil else { return nil }
-        return GestureEvent(gesture: gesture, startTime: candidate.since, time: t)
+        return GestureEvent(gesture: gesture, startTime: candidate.since, time: t, magnitude: abs(rel))
     }
 }
 
