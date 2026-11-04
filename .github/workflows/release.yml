@@ -80,5 +80,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "build/AirCursor-$VERSION.zip" \
+          # Also attach a stable name so this link always serves the newest build:
+          # https://github.com/${{ github.repository }}/releases/latest/download/AirCursor.zip
+          cp "build/AirCursor-$VERSION.zip" build/AirCursor.zip
+          gh release create "$GITHUB_REF_NAME" build/AirCursor.zip "build/AirCursor-$VERSION.zip" \
             --title "AirCursor $VERSION" --generate-notes

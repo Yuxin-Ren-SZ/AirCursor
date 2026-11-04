@@ -10,7 +10,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/m-afham/AirCursor/releases/latest"><img src="https://img.shields.io/github/v/release/m-afham/AirCursor?label=download" alt="Download"></a>
+  <a href="https://github.com/m-afham/AirCursor/releases/latest/download/AirCursor.zip"><img src="https://img.shields.io/badge/Download_for_Mac-AirCursor.zip-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="Download AirCursor for Mac" height="44"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/m-afham/AirCursor/releases/latest"><img src="https://img.shields.io/github/v/release/m-afham/AirCursor?label=latest" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-15%2B-blue" alt="macOS 15+">
   <a href="https://github.com/m-afham/AirCursor/actions/workflows/ci.yml"><img src="https://github.com/m-afham/AirCursor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
@@ -53,7 +57,7 @@ On first launch AirCursor takes you through two permissions and connecting your 
 
 ## Install
 
-1. Download the latest `AirCursor-x.y.z.zip` from [**Releases**](https://github.com/m-afham/AirCursor/releases/latest), unzip it, and move **AirCursor** to Applications.
+1. **[Download AirCursor.zip](https://github.com/m-afham/AirCursor/releases/latest/download/AirCursor.zip)** (always the latest version), unzip it, and move **AirCursor** to Applications.
 2. Open it. If macOS says it can't verify the developer, open **System Settings › Privacy & Security**, scroll down, and click **Open Anyway**. (Only needed for builds that aren't notarized.)
 3. Follow the guided tour.
 
