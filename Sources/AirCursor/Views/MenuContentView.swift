@@ -51,7 +51,7 @@ struct MenuContentView: View {
                 Slider(value: $controller.settings.pointer.sensitivity, in: 0.2...4)
             }
 
-            Toggle("Dwell click (hold still to click)", isOn: $controller.settings.dwell.enabled)
+            Toggle("Hover click (rest the pointer to click)", isOn: $controller.settings.dwell.enabled)
 
             if let last = controller.lastTriggerDescription {
                 Text("Last: \(last)").font(.caption).foregroundStyle(.secondary).lineLimit(1)

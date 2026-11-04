@@ -320,7 +320,7 @@ extension Trigger {
         case .shake: "shake your head"
         case .tiltLeft: "tilt your head left"
         case .tiltRight: "tilt your head right"
-        case .dwell: "hold still"
+        case .dwell: "rest the pointer on it"
         }
     }
 }
@@ -333,7 +333,7 @@ private struct WelcomeStep: View {
             Text("Your AirPods\nare now a mouse.")
                 .font(.system(size: 40, weight: .bold))
                 .padding(.bottom, 14)
-            Text("Turn your head to point. Nod to click. Your hands stay free for everything else.")
+            Text("Turn your head to point. Rest on a button to click. Your hands stay free for everything else.")
                 .font(.system(size: 16))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -341,7 +341,7 @@ private struct WelcomeStep: View {
 
             VStack(alignment: .leading, spacing: 20) {
                 feature("cursorarrow.motionlines", "Point with your head", "Smooth and precise, across all your displays.")
-                feature("hand.tap", "Click without touching", "A small nod clicks. So does a stem press.")
+                feature("hand.tap", "Click without touching", "Rest the pointer on a button and it clicks. Or nod, or press the stem.")
                 feature("lock", "Private by design", "Motion data never leaves your Mac.")
             }
 
@@ -562,6 +562,7 @@ private struct TryItStep: View {
 
     @State private var hits = 0
     @State private var hovering = false
+    @State private var usedHover = false
     @State private var usedNod = false
     @State private var usedStem = false
 
@@ -595,6 +596,9 @@ private struct TryItStep: View {
                 }
             }
             HStack(spacing: 10) {
+                if controller.settings.dwell.enabled {
+                    chip("Hover", symbol: "timer", used: usedHover)
+                }
                 chip("Nod", symbol: "arrow.down.and.line.horizontal.and.arrow.up", used: usedNod)
                 chip("Stem press", symbol: "hand.tap", used: usedStem)
                 Spacer()
@@ -606,7 +610,7 @@ private struct TryItStep: View {
             }
             .padding(.top, 12)
             HStack {
-                Toggle("Also click when I hold still (dwell)", isOn: $controller.settings.dwell.enabled)
+                Toggle("Hover click (rest the pointer to click)", isOn: $controller.settings.dwell.enabled)
                 Spacer()
                 Text("Speed").foregroundStyle(.secondary)
                 Slider(value: $controller.settings.pointer.sensitivity, in: 0.2...4).frame(width: 150)
@@ -618,12 +622,16 @@ private struct TryItStep: View {
         .onDisappear { controller.endNodCalibration() }
         .onChange(of: controller.lastTriggerEvent) { _, event in
             guard let event else { return }
+            if event.trigger == .dwell { withAnimation { usedHover = true } }
             if event.trigger == .nod { withAnimation { usedNod = true } }
             if event.trigger.isStem { withAnimation { usedStem = true } }
         }
     }
 
     private var subtitle: String {
+        if controller.settings.dwell.enabled, controller.settings.actions[.dwell].isClick {
+            return "Turn your head to put the pointer on the button, then just hold still — a ring fills and it clicks. A nod or a stem press works too."
+        }
         let nodClicks = controller.settings.actions[.nod].isClick
         let stem = controller.settings.actions[.stemSingle].isClick
         switch (nodClicks, stem) {

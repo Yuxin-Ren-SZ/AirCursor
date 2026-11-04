@@ -16,6 +16,9 @@ private func makeOverlayPanel(size: NSSize) -> NSPanel {
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
     panel.isReleasedWhenClosed = false
     panel.hidesOnDeactivate = false
+    // Purely visual: keep it out of Accessibility so it never masks what's underneath.
+    panel.setAccessibilityElement(false)
+    panel.setAccessibilityHidden(true)
     return panel
 }
 

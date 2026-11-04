@@ -44,6 +44,10 @@ public struct GestureDetector: Sendable {
     private var history: [Pose] = []
     private var lastRawYaw: Double?
     private var cooldownUntil: TimeInterval = -.infinity
+    /// After a gesture fires, nothing re-arms until the head settles, so one nod or
+    /// shake (including its follow-through) can never fire twice.
+    private var awaitingStill = false
+    private var stillSince: TimeInterval?
     private var rollBaseline: Double?
     private var tiltCandidate: (gesture: HeadGesture, since: TimeInterval)?
     private var tiltLatched = false
@@ -60,6 +64,9 @@ public struct GestureDetector: Sendable {
     static let minNodSpeed = 30.0
     static let minShakeSpeed = 50.0
     static let historySpan: TimeInterval = 1.5
+    /// Head speed (deg/s) below which it counts as settled, and for how long.
+    static let settledSpeed = 25.0
+    static let settledFor: TimeInterval = 0.15
 
     public init(settings: GestureSettings = GestureSettings()) {
         self.settings = settings
@@ -82,6 +89,8 @@ public struct GestureDetector: Sendable {
         history.removeAll()
         lastRawYaw = nil
         cooldownUntil = -.infinity
+        awaitingStill = false
+        stillSince = nil
         resetTiltBaseline()
     }
 
@@ -111,6 +120,22 @@ public struct GestureDetector: Sendable {
 
         let tilt = updateTilt(rollDegrees: roll, time: t, enabled: enabled)
 
+        if awaitingStill {
+            let speed = history.count >= 2 ? peakSpeedBetween(history[history.count - 2], history[history.count - 1]) : 0
+            if speed < Self.settledSpeed {
+                stillSince = stillSince ?? t
+                if t - (stillSince ?? t) >= Self.settledFor {
+                    awaitingStill = false
+                    stillSince = nil
+                    // Start fresh from the settled pose.
+                    history = Array(history.suffix(1))
+                }
+            } else {
+                stillSince = nil
+            }
+            return nil
+        }
+
         guard t >= cooldownUntil else { return nil }
         if enabled.contains(.nod), let e = detectNod(now: t) { return fire(e) }
         if enabled.contains(.shake), let e = detectShake(now: t) { return fire(e) }
@@ -120,10 +145,15 @@ public struct GestureDetector: Sendable {
 
     private mutating func fire(_ event: GestureEvent) -> GestureEvent {
         cooldownUntil = event.time + settings.cooldown
-        history.removeAll()
-        lastRawYaw = nil
+        awaitingStill = true
+        stillSince = nil
         tiltCandidate = nil
         return event
+    }
+
+    private func peakSpeedBetween(_ a: Pose, _ b: Pose) -> Double {
+        guard b.t > a.t else { return 0 }
+        return max(abs(b.pitch - a.pitch), abs(b.yaw - a.yaw)) / (b.t - a.t)
     }
 
     // MARK: Nod
@@ -273,6 +303,11 @@ public struct DwellDetector: Sendable {
     private var anchorTime: TimeInterval = 0
     private var armed = false
 
+    /// Changes every time the pointer settles somewhere new, so the app can check
+    /// (once per resting spot) whether what's under the pointer is clickable.
+    public private(set) var anchorID = 0
+    public private(set) var anchorPosition: Vec2?
+
     /// Fraction of the dwell before the progress ring appears (avoids flicker while moving).
     static let revealFraction = 0.2
 
@@ -302,6 +337,8 @@ public struct DwellDetector: Sendable {
             anchor = position
             anchorTime = time
             armed = true
+            anchorID &+= 1
+            anchorPosition = position
             return Update(progress: nil, fired: false)
         }
         guard armed, settings.duration > 0 else { return Update(progress: nil, fired: false) }

@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Your AirPods are now a mouse.</b><br>
-  Turn your head to point. Nod to click. Completely hands-free on your Mac.
+  Turn your head to point. Rest on a button to click. Completely hands-free on your Mac.
 </p>
 
 <p align="center">
@@ -27,19 +27,19 @@ AirCursor reads the motion sensors already built into your AirPods and turns hea
 | You do | AirCursor does *(defaults, all remappable)* |
 |---|---|
 | Turn your head | Moves the pointer (smooth, accelerated, works across all your displays) |
+| Rest the pointer on a button | **Hover click.** A ring fills, then it clicks. Only buttons, links, tabs, menus, fields and Dock icons count, so resting on text you're reading never clicks |
 | Press the stem once | Left click |
 | Press the stem twice | Right click |
 | Press the stem three times | Scroll mode: look up/down/left/right to scroll |
 | Nod | Left click, landing where you pointed *before* the nod |
 | Shake your head | Pause / resume |
 | Tilt left / right | Your choice: Back/Forward, switch Spaces, Mission Control… |
-| Hold still | Dwell click with a progress ring (off by default; great for hands-free use) |
 
 Other actions you can assign: double click, middle click, drag lock, recenter, App windows, the screenshot tool, and more. Shortcuts: **⌃⌥T** pause · **⌃⌥S** scroll mode · **⌃⌥C** recenter · **⌃⌥D** drag.
 
 ### A one-minute guided tour
 
-On first launch AirCursor takes you through two permissions and connecting your AirPods, then has you **try it once for real**: point at a button with your head and click it with a nod. While you do that, it learns how big your natural nod is and tunes nod detection to match. A 3D pair of earbuds mirrors your head in real time the whole way through. If you leave for System Settings to grant a permission, the tour comes back and resumes on the same step.
+On first launch AirCursor takes you through two permissions and connecting your AirPods, then has you **try it once for real**: point at a button with your head and hold still until it clicks, or nod. While you do that, it learns how big your natural nod is and tunes nod detection to match. A 3D pair of earbuds mirrors your head in real time the whole way through. If you leave for System Settings to grant a permission, the tour comes back and resumes on the same step.
 
 <p align="center">
   <img src="docs/screenshots/tryit.png" width="410" alt="Try it: point and nod">
@@ -81,6 +81,8 @@ Motion data is processed in memory on your Mac and never stored or sent anywhere
 **The pointer doesn't move.** AirPods only send head-tracking data to the device they're *playing audio for*. If your iPhone has them, or your Mac's sound output is set to its speakers, no motion arrives. Put the AirPods in, then choose them under **Control Center › Sound**. AirCursor switches the Mac's output to your AirPods automatically when it can, and warns you when it can't.
 
 **Something else is off.** Open **Settings › Shortcuts & General › Diagnostics**. It checks every link in the chain (permissions, Bluetooth, audio route, motion samples) and marks the first one that's failing.
+
+**Hover click is too fast, too slow, or clicks things I didn't mean to.** Go to **Settings › Clicks & Gestures › Hover click** to change the rest time, or turn it off. It pauses while you type, and it only clicks things macOS reports as clickable.
 
 **Nods don't click, or click by accident.** Go to **Settings › Clicks & Gestures** and adjust **Nod size needed**. The hint underneath shows how big your last nod was. Replaying the guided tour also re-tunes it automatically.
 

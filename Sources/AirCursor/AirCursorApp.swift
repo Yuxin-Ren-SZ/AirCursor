@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             AppController.shared.start()
             DebugSnapshot.runIfRequested()
+            DebugProbe.runIfRequested()
         }
     }
 

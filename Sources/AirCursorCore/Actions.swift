@@ -17,7 +17,7 @@ public enum Trigger: String, Codable, CaseIterable, Identifiable, Sendable {
         case .shake: "Shake head"
         case .tiltLeft: "Tilt head left"
         case .tiltRight: "Tilt head right"
-        case .dwell: "Hold still (dwell)"
+        case .dwell: "Hover (rest the pointer)"
         }
     }
 

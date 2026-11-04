@@ -40,7 +40,7 @@ public struct PointerSettings: Codable, Equatable, Sendable {
 
 public struct GestureSettings: Codable, Equatable, Sendable {
     /// How far (degrees) the head must dip for a nod. Tuned per user by the guided tour.
-    public var nodAmplitude: Double = 6
+    public var nodAmplitude: Double = 5.5
     /// Max time for a whole nod (down and back).
     public var nodWindow: Double = 0.8
     /// How far (degrees) each swing of a head shake must go.
@@ -72,12 +72,16 @@ public struct GestureSettings: Codable, Equatable, Sendable {
     }
 }
 
+/// "Hover click": rest the pointer and it clicks.
 public struct DwellSettings: Codable, Equatable, Sendable {
-    public var enabled: Bool = false
+    public var enabled: Bool = true
+    /// Only click things that are clickable (buttons, links, tabs, menus, fields…),
+    /// so resting on text you're reading never clicks.
+    public var smart: Bool = true
     /// Seconds the cursor must rest before it clicks.
-    public var duration: Double = 1.0
+    public var duration: Double = 0.8
     /// Pixels of drift still considered "resting".
-    public var radius: Double = 14
+    public var radius: Double = 16
 
     public init() {}
 
@@ -85,12 +89,17 @@ public struct DwellSettings: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = DwellSettings()
         enabled = c.value(.enabled, default: d.enabled)
+        smart = c.value(.smart, default: d.smart)
         duration = c.value(.duration, default: d.duration)
         radius = c.value(.radius, default: d.radius)
     }
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
+    /// Bumped when defaults change in a way existing users should receive.
+    public static let currentVersion = 2
+    public var version: Int = AppSettings.currentVersion
+
     public var pointer = PointerSettings()
     public var gestures = GestureSettings()
     public var dwell = DwellSettings()
@@ -111,6 +120,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = AppSettings()
+        version = c.value(.version, default: 1)
         pointer = c.value(.pointer, default: d.pointer)
         gestures = c.value(.gestures, default: d.gestures)
         dwell = c.value(.dwell, default: d.dwell)
@@ -121,5 +131,20 @@ public struct AppSettings: Codable, Equatable, Sendable {
         showHUD = c.value(.showHUD, default: d.showHUD)
         showClickPulse = c.value(.showClickPulse, default: d.showClickPulse)
         hasCompletedOnboarding = c.value(.hasCompletedOnboarding, default: d.hasCompletedOnboarding)
+    }
+}
+
+extension AppSettings {
+    /// Upgrades settings saved by older builds.
+    public func migrated() -> AppSettings {
+        var s = self
+        if s.version < 2 {
+            // v2: smart hover click becomes the default hands-free tap, and nods are
+            // measured in degrees (smaller default).
+            s.dwell = DwellSettings()
+            s.gestures.nodAmplitude = GestureSettings().nodAmplitude
+        }
+        s.version = AppSettings.currentVersion
+        return s
     }
 }

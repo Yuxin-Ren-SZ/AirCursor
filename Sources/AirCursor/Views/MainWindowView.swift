@@ -381,17 +381,19 @@ struct GestureSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("Dwell click") {
+            Section("Hover click") {
                 Toggle("Click when the pointer rests", isOn: $controller.settings.dwell.enabled)
+                Toggle("Only on buttons, links and other clickable things", isOn: $controller.settings.dwell.smart)
+                    .disabled(!controller.settings.dwell.enabled)
                 ActionPicker(trigger: .dwell, action: binding(.dwell))
                     .disabled(!controller.settings.dwell.enabled)
-                LabeledSlider(title: "Rest time", value: $controller.settings.dwell.duration, range: 0.4...3,
+                LabeledSlider(title: "Rest time", value: $controller.settings.dwell.duration, range: 0.3...3,
                               format: { String(format: "%.1fs", $0) })
                     .disabled(!controller.settings.dwell.enabled)
                 LabeledSlider(title: "Rest radius", value: $controller.settings.dwell.radius, range: 4...40,
                               format: { String(format: "%.0f pt", $0) })
                     .disabled(!controller.settings.dwell.enabled)
-                Text("A ring fills around the pointer; it clicks when the ring closes. Move again to arm the next click.")
+                Text("A ring fills around the pointer; it clicks when the ring closes. Move again to arm the next click. Paused while you type.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

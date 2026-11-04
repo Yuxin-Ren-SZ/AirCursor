@@ -58,3 +58,24 @@ enum DebugSnapshot {
         }
     }
 }
+
+/// Developer tool: logs the hover-click verdict for given screen points.
+///
+///     open build/AirCursor.app --env AIRCURSOR_PROBE_POINTS="20,10;400,300"
+@MainActor
+enum DebugProbe {
+    static func runIfRequested() {
+        guard let spec = ProcessInfo.processInfo.environment["AIRCURSOR_PROBE_POINTS"] else { return }
+        let points = spec.split(separator: ";").compactMap { pair -> CGPoint? in
+            let xy = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            return xy.count == 2 ? CGPoint(x: xy[0], y: xy[1]) : nil
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            for p in points {
+                ClickableProbe.check(p) { clickable in
+                    Diagnostics.log.notice("Probe (\(Int(p.x), privacy: .public),\(Int(p.y), privacy: .public)): \(clickable ? "clickable" : "not clickable", privacy: .public) — \(ClickableProbe.describe(p), privacy: .public)")
+                }
+            }
+        }
+    }
+}

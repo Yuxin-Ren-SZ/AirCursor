@@ -90,6 +90,8 @@ final class AppController: ObservableObject {
     private var didAutoStart = false
     /// Non-nil while the tour is learning how big the user's nods are.
     private var nodCalibration: [Double]?
+    private var probedAnchor = -1
+    private var anchorClickable: Bool?
     private static let calibrationNodAmplitude = 4.0
     private var sampleCount = 0
     private var housekeepingTicks = 0
@@ -101,7 +103,9 @@ final class AppController: ObservableObject {
     private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     private init() {
-        let loaded = SettingsStore.load()
+        let stored = SettingsStore.load()
+        let loaded = stored.migrated()
+        if loaded != stored { SettingsStore.save(loaded) }
         settings = loaded
         gestures = GestureDetector(settings: loaded.gestures)
         dwell = DwellDetector(settings: loaded.dwell)
@@ -327,7 +331,7 @@ final class AppController: ObservableObject {
             return
         }
         let median = depths.sorted()[depths.count / 2]
-        let tuned = (min(max(median * 0.55, 4), 14) * 2).rounded() / 2
+        let tuned = (min(max(median * 0.7, 5), 14) * 2).rounded() / 2
         Diagnostics.log.notice("Nod calibration: median \(String(format: "%.1f", median), privacy: .public)° → threshold \(String(format: "%.1f", tuned), privacy: .public)°")
         settings.gestures.nodAmplitude = tuned
         gestures.settings = settings.gestures
@@ -626,13 +630,38 @@ final class AppController: ObservableObject {
 
         history.append(Vec2(position.x, position.y), at: now)
 
-        if mode == .pointer, settings.dwell.enabled, settings.actions[.dwell] != .none, motionStreaming {
+        if mode == .pointer, settings.dwell.enabled, settings.actions[.dwell] != .none,
+           motionStreaming, !isDragging, !userIsTyping {
             let update = dwell.update(position: Vec2(position.x, position.y), time: now)
-            cursorOverlay.update(dwellProgress: update.progress, at: position)
-            if update.fired { handle(trigger: .dwell, gestureStart: nil) }
+            var progress = update.progress
+            var fired = update.fired
+            if settings.dwell.smart {
+                // Once per resting spot, ask whether what's under the pointer is clickable.
+                // Until we know (or if it isn't), show nothing and don't click.
+                let anchor = dwell.anchorID
+                if progress != nil || fired, probedAnchor != anchor {
+                    probedAnchor = anchor
+                    anchorClickable = nil
+                    ClickableProbe.check(position) { [weak self] clickable in
+                        guard let self, self.probedAnchor == anchor else { return }
+                        self.anchorClickable = clickable
+                    }
+                }
+                if anchorClickable != true {
+                    progress = nil
+                    fired = false
+                }
+            }
+            cursorOverlay.update(dwellProgress: progress, at: position)
+            if fired { handle(trigger: .dwell, gestureStart: nil) }
         } else {
             cursorOverlay.update(dwellProgress: nil, at: position)
         }
+    }
+
+    /// Hover click stays out of the way while you type.
+    private var userIsTyping: Bool {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown) < 1.5
     }
 
     /// Adopts the real cursor position if something else (a mouse, trackpad) moved it.

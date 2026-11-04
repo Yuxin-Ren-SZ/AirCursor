@@ -83,6 +83,28 @@ final class GestureTests: XCTestCase {
         XCTAssertEqual(feed(&d, pitch: nod).count, 1)
     }
 
+    func testNodBurstWithoutSettlingFiresOnce() {
+        var d = GestureDetector()
+        // Nodding repeatedly without ever holding still = one click, not three.
+        let burst = dip(-10, over: 0.4, tail: 0) + dip(-10, over: 0.4, lead: 0, tail: 0) + dip(-10, over: 0.4, lead: 0)
+        XCTAssertEqual(feed(&d, pitch: burst).count, 1)
+    }
+
+    func testSeparateNodsEachFire() {
+        var d = GestureDetector()
+        let two = dip(-10, over: 0.4, tail: 15) + dip(-10, over: 0.4, lead: 0)
+        XCTAssertEqual(feed(&d, pitch: two).map(\.gesture), [.nod, .nod])
+    }
+
+    func testLongShakeFiresOnce() {
+        var d = GestureDetector()
+        // Two full seconds of shaking must toggle once, not off-on-off-on.
+        let n = Int(2.0 * hz)
+        let yaw = (0...n).map { 14 * sin(2 * .pi * Double($0) / (0.45 * hz)) } + Array(repeating: 0.0, count: 10)
+        let events = feed(&d, pitch: Array(repeating: 0, count: yaw.count), yaw: yaw)
+        XCTAssertEqual(events.map(\.gesture), [.shake])
+    }
+
     func testDisabledGesturesDoNotFire() {
         var d = GestureDetector()
         XCTAssertTrue(feed(&d, pitch: dip(-12, over: 0.4), enabled: [.shake]).isEmpty)
@@ -193,6 +215,18 @@ final class DwellTests: XCTestCase {
         }
     }
 
+    func testAnchorIDChangesOnlyWhenPointerSettlesSomewhereNew() {
+        var d = DwellDetector(settings: settings())
+        _ = d.update(position: .zero, time: 0)
+        _ = d.update(position: Vec2(50, 0), time: 0.1)
+        let first = d.anchorID
+        _ = d.update(position: Vec2(52, 2), time: 0.2)
+        XCTAssertEqual(d.anchorID, first)
+        _ = d.update(position: Vec2(120, 0), time: 0.3)
+        XCTAssertNotEqual(d.anchorID, first)
+        XCTAssertEqual(d.anchorPosition, Vec2(120, 0))
+    }
+
     func testProgressRevealsAndResetDisarms() {
         var d = DwellDetector(settings: settings())
         _ = d.update(position: .zero, time: 0)
@@ -222,6 +256,23 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s.actions[.nod], .rightClick)
         XCTAssertEqual(s.actions[.shake], ActionMap.defaults[.shake])
         XCTAssertEqual(s.gestures, GestureSettings())
+    }
+
+    func testV1SettingsMigrateToSmartHoverClick() throws {
+        let v1 = #"{"dwell":{"enabled":false,"duration":1.0},"gestures":{"nodAmplitude":9},"pointer":{"sensitivity":2}}"#
+        let s = try JSONDecoder().decode(AppSettings.self, from: Data(v1.utf8)).migrated()
+        XCTAssertTrue(s.dwell.enabled)
+        XCTAssertTrue(s.dwell.smart)
+        XCTAssertEqual(s.gestures.nodAmplitude, GestureSettings().nodAmplitude)
+        XCTAssertEqual(s.pointer.sensitivity, 2)          // unrelated choices survive
+        XCTAssertEqual(s.version, AppSettings.currentVersion)
+    }
+
+    func testCurrentSettingsAreNotReMigrated() throws {
+        var s = AppSettings()
+        s.dwell.enabled = false
+        let data = try JSONEncoder().encode(s)
+        XCTAssertFalse(try JSONDecoder().decode(AppSettings.self, from: data).migrated().dwell.enabled)
     }
 
     func testActionMapQueries() {
