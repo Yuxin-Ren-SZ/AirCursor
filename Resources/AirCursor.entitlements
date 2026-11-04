@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  AirCursor is distributed outside the Mac App Store (Developer ID).
+	  It cannot be sandboxed: posting synthetic mouse events to other apps
+	  requires the Accessibility permission, which sandboxed apps can't use.
+	  Hardened Runtime is enabled at signing time; no exceptions are needed.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>
