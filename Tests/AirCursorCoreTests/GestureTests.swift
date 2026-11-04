@@ -121,11 +121,11 @@ final class GestureTests: XCTestCase {
     func testGlancingLeftThenRightThenBackIsNotAShake() {
         var d = GestureDetector()
         // Look at a window on the left, one on the right, then back to center: 3 swings.
-        let yaw: [Double] = Array(repeating: 0, count: 4)
-            + (0...6).map { -18 * Double($0) / 6 }
-            + (0...10).map { -18 + 36 * Double($0) / 10 }
-            + (0...6).map { 18 - 18 * Double($0) / 6 }
-            + Array(repeating: 0, count: 6)
+        var yaw: [Double] = Array(repeating: 0, count: 4)
+        for i in 0...6 { yaw.append(-18.0 * Double(i) / 6.0) }
+        for i in 0...10 { yaw.append(-18.0 + 36.0 * Double(i) / 10.0) }
+        for i in 0...6 { yaw.append(18.0 - 18.0 * Double(i) / 6.0) }
+        yaw += Array(repeating: 0.0, count: 6)
         XCTAssertTrue(feed(&d, pitch: Array(repeating: 0, count: yaw.count), yaw: yaw).isEmpty)
     }
 
