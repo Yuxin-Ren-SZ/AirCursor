@@ -35,7 +35,7 @@ struct AirCursorApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .defaultPosition(.center)
-        .defaultLaunchBehavior(AppController.shared.settings.hasCompletedOnboarding && DebugSnapshot.directory == nil ? .suppressed : .presented)
+        .defaultLaunchBehavior(AppController.shared.needsSetup || DebugSnapshot.directory != nil ? .presented : .suppressed)
     }
 }
 

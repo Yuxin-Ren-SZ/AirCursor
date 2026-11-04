@@ -112,10 +112,21 @@ final class GestureTests: XCTestCase {
 
     func testShakeDetected() {
         var d = GestureDetector()
-        let n = Int(0.8 * hz)
+        let n = Int(1.1 * hz)
         let yaw = Array(repeating: 0.0, count: 4) + (0...n).map { 15 * sin(2 * .pi * Double($0) / (0.5 * hz)) } + Array(repeating: 0.0, count: 4)
         let events = feed(&d, pitch: Array(repeating: 0, count: yaw.count), yaw: yaw)
         XCTAssertEqual(events.map(\.gesture), [.shake])
+    }
+
+    func testGlancingLeftThenRightThenBackIsNotAShake() {
+        var d = GestureDetector()
+        // Look at a window on the left, one on the right, then back to center: 3 swings.
+        let yaw: [Double] = Array(repeating: 0, count: 4)
+            + (0...6).map { -18 * Double($0) / 6 }
+            + (0...10).map { -18 + 36 * Double($0) / 10 }
+            + (0...6).map { 18 - 18 * Double($0) / 6 }
+            + Array(repeating: 0, count: 6)
+        XCTAssertTrue(feed(&d, pitch: Array(repeating: 0, count: yaw.count), yaw: yaw).isEmpty)
     }
 
     func testSingleLookAsideAndBackIsNotAShake() {
@@ -266,6 +277,13 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s.gestures.nodAmplitude, GestureSettings().nodAmplitude)
         XCTAssertEqual(s.pointer.sensitivity, 2)          // unrelated choices survive
         XCTAssertEqual(s.version, AppSettings.currentVersion)
+    }
+
+    func testV2SettingsGetDeliberateShake() throws {
+        let v2 = #"{"version":2,"gestures":{"shakeAmplitude":8,"shakeWindow":1.1},"dwell":{"enabled":false}}"#
+        let s = try JSONDecoder().decode(AppSettings.self, from: Data(v2.utf8)).migrated()
+        XCTAssertEqual(s.gestures.shakeAmplitude, GestureSettings().shakeAmplitude)
+        XCTAssertFalse(s.dwell.enabled)   // a v2 user's own hover-click choice is kept
     }
 
     func testCurrentSettingsAreNotReMigrated() throws {

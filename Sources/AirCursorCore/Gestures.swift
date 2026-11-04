@@ -28,7 +28,7 @@ public struct GestureEvent: Equatable, Sendable {
 ///
 /// - Nod: pitch leaves its starting angle by ≥ `nodAmplitude`, then returns most of
 ///   the way, within `nodWindow`, with little sideways motion. Either direction.
-/// - Shake: yaw swings back and forth ≥ `shakeAmplitude` at least three times within
+/// - Shake: yaw swings back and forth ≥ `shakeAmplitude` at least four times within
 ///   `shakeWindow`, with little vertical motion.
 /// - Tilt: roll held beyond `tiltAngle` from the neutral posture for `tiltHold`.
 ///   Fires once, then re-arms when the head returns toward neutral.
@@ -62,7 +62,10 @@ public struct GestureDetector: Sendable {
     static let crossAxisAllowance = 0.6
     /// Movements slower than this (deg/s at their fastest) are deliberate pointing, not gestures.
     static let minNodSpeed = 30.0
-    static let minShakeSpeed = 50.0
+    static let minShakeSpeed = 80.0
+    /// Swings needed for a shake: left-right-left-right. Three can happen just by
+    /// glancing left, then right, then back to the screen.
+    static let shakeSwings = 4
     static let historySpan: TimeInterval = 1.5
     /// Head speed (deg/s) below which it counts as settled, and for how long.
     static let settledSpeed = 25.0
@@ -222,7 +225,7 @@ public struct GestureDetector: Sendable {
                 }
             }
         }
-        guard swings >= 3 else { return nil }
+        guard swings >= Self.shakeSwings else { return nil }
 
         let pitchRange = (window.map(\.pitch).max() ?? 0) - (window.map(\.pitch).min() ?? 0)
         guard pitchRange <= largest * Self.crossAxisAllowance else { return nil }

@@ -145,21 +145,38 @@ final class AppController: ObservableObject {
         }
 
         if motionAuthorization == .authorized { motionRequested = true }
-        if settings.hasCompletedOnboarding, accessibilityTrusted {
+
+        // Tracking is on by default: whenever Accessibility allows it.
+        if accessibilityTrusted {
+            didAutoStart = true
             setTracking(true, announce: false)
         } else {
             updateServices()
-            autoStartIfReady()
+        }
+
+        // Setup incomplete (first launch, reinstall, permissions reset) → guided tour,
+        // resuming at the permissions step for people who've seen it before.
+        if needsSetup {
+            if settings.hasCompletedOnboarding, tourStep < 1 { tourStep = 1 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self, self.needsSetup else { return }
+                let visible = NSApp.windows.contains { $0.isVisible && $0.title == "Welcome to AirCursor" }
+                if !visible { self.showTour() }
+            }
         }
     }
 
-    /// First run: as soon as both permissions are granted, start tracking (once) so
-    /// the guided tour can be experienced live — no hunting for a button.
+    /// True until AirCursor can actually work: tour finished and both permissions granted.
+    var needsSetup: Bool {
+        !settings.hasCompletedOnboarding || !accessibilityTrusted || motionAuthorization != .authorized
+    }
+
+    /// Tracking is on by default, so the moment Accessibility is granted the pointer
+    /// starts following your head (and asking for Motion, if not yet allowed).
     private func autoStartIfReady() {
-        guard !didAutoStart, !settings.hasCompletedOnboarding, !trackingEnabled,
-              accessibilityTrusted, motionAuthorization == .authorized else { return }
+        guard !didAutoStart, !trackingEnabled, accessibilityTrusted else { return }
         didAutoStart = true
-        Diagnostics.log.notice("Permissions granted; starting tracking for first run")
+        Diagnostics.log.notice("Accessibility granted; tracking on")
         setTracking(true, announce: false)
     }
 
@@ -696,6 +713,9 @@ final class AppController: ObservableObject {
         let action = settings.actions[trigger]
         guard action != .none else { return }
         guard trackingEnabled || action == .toggleTracking else { return }
+        // Head gestures can't pause tracking during setup: people look around a lot
+        // while granting permissions and putting AirPods in.
+        if action == .toggleTracking, trigger.headGesture != nil, !settings.hasCompletedOnboarding { return }
         guard accessibilityTrusted || !action.needsAccessibility else {
             toast("Allow Accessibility to click", symbol: "lock.shield")
             return

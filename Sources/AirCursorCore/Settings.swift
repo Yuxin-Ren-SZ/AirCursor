@@ -44,9 +44,9 @@ public struct GestureSettings: Codable, Equatable, Sendable {
     /// Max time for a whole nod (down and back).
     public var nodWindow: Double = 0.8
     /// How far (degrees) each swing of a head shake must go.
-    public var shakeAmplitude: Double = 8
-    /// Time window for the three swings of a shake.
-    public var shakeWindow: Double = 1.1
+    public var shakeAmplitude: Double = 12
+    /// Time window for the four swings of a shake.
+    public var shakeWindow: Double = 1.4
     /// Roll (degrees) away from your neutral posture that counts as a tilt.
     public var tiltAngle: Double = 22
     /// How long a tilt must be held before it fires.
@@ -97,7 +97,7 @@ public struct DwellSettings: Codable, Equatable, Sendable {
 
 public struct AppSettings: Codable, Equatable, Sendable {
     /// Bumped when defaults change in a way existing users should receive.
-    public static let currentVersion = 2
+    public static let currentVersion = 3
     public var version: Int = AppSettings.currentVersion
 
     public var pointer = PointerSettings()
@@ -143,6 +143,11 @@ extension AppSettings {
             // measured in degrees (smaller default).
             s.dwell = DwellSettings()
             s.gestures.nodAmplitude = GestureSettings().nodAmplitude
+        }
+        if s.version < 3 {
+            // v3: shake needs bigger, repeated swings so glancing around never pauses.
+            s.gestures.shakeAmplitude = GestureSettings().shakeAmplitude
+            s.gestures.shakeWindow = GestureSettings().shakeWindow
         }
         s.version = AppSettings.currentVersion
         return s

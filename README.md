@@ -80,6 +80,8 @@ Motion data is processed in memory on your Mac and never stored or sent anywhere
 
 **The pointer doesn't move.** AirPods only send head-tracking data to the device they're *playing audio for*. If your iPhone has them, or your Mac's sound output is set to its speakers, no motion arrives. Put the AirPods in, then choose them under **Control Center › Sound**. AirCursor switches the Mac's output to your AirPods automatically when it can, and warns you when it can't.
 
+**After an update, the pointer doesn't move even though Accessibility is on.** macOS ties the permission to the exact build. Open **System Settings › Privacy & Security › Accessibility** and switch AirCursor off and on again. The guided tour reopens on its own and walks you through it.
+
 **Something else is off.** Open **Settings › Shortcuts & General › Diagnostics**. It checks every link in the chain (permissions, Bluetooth, audio route, motion samples) and marks the first one that's failing.
 
 **Hover click is too fast, too slow, or clicks things I didn't mean to.** Go to **Settings › Clicks & Gestures › Hover click** to change the rest time, or turn it off. It pauses while you type, and it only clicks things macOS reports as clickable.

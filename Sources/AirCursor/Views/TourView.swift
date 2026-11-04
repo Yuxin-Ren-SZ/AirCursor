@@ -65,6 +65,7 @@ struct TourView: View {
         .onAppear {
             NSApp.activate()
             controller.windowVisibilityChanged()
+            Diagnostics.log.notice("Guided tour shown (step \(controller.tourStep, privacy: .public))")
         }
         .onDisappear { controller.windowVisibilityChanged() }
         .onReceive(NotificationCenter.default.publisher(for: .tourShowStep)) { note in
@@ -110,19 +111,13 @@ struct TourView: View {
                     .padding(.leading, 12)
             }
             Spacer()
-            if step == .tryIt, !triedIt {
-                Button("Skip") { go(1) }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .padding(.trailing, 8)
-            }
+            // Never blocks: every step can be continued, ready or not.
             Button(primaryTitle) {
                 step == .done ? finish() : go(1)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .keyboardShortcut(.defaultAction)
-            .disabled(!canContinue)
         }
         .padding(.top, 16)
     }
@@ -132,15 +127,6 @@ struct TourView: View {
         case .welcome: "Get started"
         case .done: "Start using AirCursor"
         default: "Continue"
-        }
-    }
-
-    private var canContinue: Bool {
-        switch step {
-        case .welcome, .done: true
-        case .permissions: permissionsGranted
-        case .connect: controller.motionStreaming
-        case .tryIt: triedIt
         }
     }
 
@@ -284,7 +270,18 @@ private struct TrackingHint: View {
 
     var body: some View {
         if !controller.trackingEnabled {
-            hint("Head tracking is paused. Shake your head or press \(HotKey.toggleTracking.display) to resume.")
+            HStack {
+                Label(controller.accessibilityTrusted ? "Head tracking is off." : "Allow Accessibility to turn on head tracking.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                Spacer()
+                Button(controller.accessibilityTrusted ? "Turn on head tracking" : "Allow…") {
+                    controller.accessibilityTrusted ? controller.setTracking(true) : controller.requestAccessibility()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.bottom, 10)
         } else if !controller.motionStreaming {
             hint("Waiting for your AirPods’ motion — make sure they’re in your ears.")
         }
@@ -381,7 +378,7 @@ private struct PermissionsStep: View {
                 row(
                     symbol: "cursorarrow.click.2",
                     title: "Accessibility",
-                    detail: "Lets AirCursor move the pointer and click for you. Find AirCursor in the list and switch it on.",
+                    detail: "Lets AirCursor move the pointer and click for you. Find AirCursor in the list and switch it on. Already on? Switch it off and on again — macOS needs that after an update.",
                     granted: controller.accessibilityTrusted,
                     action: controller.requestAccessibility
                 )
@@ -447,6 +444,9 @@ private struct ConnectStep: View {
                 subtitle: "When the earbuds on the left start turning with your head, you’re connected — and your pointer follows too."
             )
 
+            if !controller.trackingEnabled, controller.accessibilityTrusted {
+                TrackingHint()
+            }
             if controller.motionStreaming {
                 VStack(alignment: .leading, spacing: 8) {
                     SuccessBadge(text: "Head tracking is live")
