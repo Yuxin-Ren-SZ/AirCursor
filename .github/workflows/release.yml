@@ -1,31 +1,145 @@
 name: Release
 
-# Push a tag like v1.0.0 to build a universal AirCursor.app and attach it to a GitHub Release.
+# Fully automatic releases.
 #
-# Optional — for a signed + notarized build that opens without Gatekeeper warnings,
-# add these repository secrets (Settings › Secrets and variables › Actions):
+# - Every push to main that changes the app (Sources/, Resources/, Package.swift,
+#   scripts/build-app.sh) publishes the next version. Doc/CI-only pushes don't release.
+# - PRs merged by the PR Review workflow call this workflow directly.
+# - Version bump: patch by default. Label the PR `release:minor` or `release:major` for bigger
+#   bumps, or `skip-release` to not release it. Pushing a tag like v2.0.0 by hand also works.
+# - Every release attaches AirCursor-x.y.z.zip and a stable AirCursor.zip, so
+#   https://github.com/<owner>/<repo>/releases/latest/download/AirCursor.zip is always current.
+#
+# Optional, for signed + notarized builds that open without Gatekeeper warnings, add:
 #   MACOS_CERT_P12        base64 of your "Developer ID Application" .p12
 #   MACOS_CERT_PASSWORD   password for that .p12
 #   NOTARY_APPLE_ID       Apple ID email
 #   NOTARY_TEAM_ID        10-character Team ID
 #   NOTARY_PASSWORD       app-specific password for notarytool
-# Without them the release is ad-hoc signed (users approve it once in System Settings).
+# Without them, releases are ad-hoc signed (users approve once in System Settings).
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      bump:
+        type: string
+        default: auto
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
 
 permissions:
   contents: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      bump: ${{ steps.plan.outputs.bump }}
+      tag: ${{ steps.plan.outputs.tag }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref || 'main' }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          BUMP: ${{ inputs.bump || 'auto' }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          skip() { echo "release=false" >> "$GITHUB_OUTPUT"; echo "No release: $1" >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+
+          if [ "$REF_TYPE" = "tag" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git tag --points-at HEAD | grep -q '^v'; then skip "HEAD is already released"; fi
+
+          LAST=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)
+          if [ -n "$LAST" ] && git diff --quiet "$LAST" HEAD -- Sources Resources Package.swift scripts/build-app.sh; then
+            skip "no app changes since $LAST"
+          fi
+
+          bump="$BUMP"
+          if [ "$bump" = "auto" ]; then
+            labels=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '[.[0].labels[]?.name] | join(",")' 2>/dev/null || true)
+            case ",$labels," in
+              *,skip-release,*)    skip "PR labeled skip-release" ;;
+              *,release:major,*)   bump=major ;;
+              *,release:minor,*)   bump=minor ;;
+              *)                   bump=patch ;;
+            esac
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+
   release:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
     runs-on: macos-15
+    permissions:
+      contents: write
+    # One release at a time, so two quick merges can't claim the same version.
+    concurrency:
+      group: release-build
+      cancel-in-progress: false
     env:
       HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
       HAS_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' && secrets.MACOS_CERT_P12 != '' }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide version
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          BUMP: ${{ needs.plan.outputs.bump }}
+        run: |
+          set -euo pipefail
+          if [ -n "$TAG" ]; then
+            VERSION="${TAG#v}"
+          else
+            git fetch --tags --force --quiet
+            LAST=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)
+            IFS=. read -r MAJOR MINOR PATCH <<< "${LAST#v}"
+            MAJOR=${MAJOR:-0}; MINOR=${MINOR:-0}; PATCH=${PATCH:-0}
+            case "$BUMP" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              *)     PATCH=$((PATCH + 1)) ;;
+            esac
+            VERSION="$MAJOR.$MINOR.$PATCH"
+            TAG="v$VERSION"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "Releasing $TAG" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -34,11 +148,8 @@ jobs:
       - name: Test
         run: swift test
 
-      - name: Set version from tag
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Resources/Info.plist
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Stamp version
+        run: /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Resources/Info.plist
 
       - name: Import signing certificate
         if: env.HAS_CERT == 'true'
@@ -78,10 +189,10 @@ jobs:
 
       - name: Publish release
         env:
-          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.plan.outputs.sha }}
         run: |
-          # Also attach a stable name so this link always serves the newest build:
-          # https://github.com/${{ github.repository }}/releases/latest/download/AirCursor.zip
           cp "build/AirCursor-$VERSION.zip" build/AirCursor.zip
-          gh release create "$GITHUB_REF_NAME" build/AirCursor.zip "build/AirCursor-$VERSION.zip" \
+          # Creates the tag on the released commit if it doesn't exist yet.
+          gh release create "$TAG" build/AirCursor.zip "build/AirCursor-$VERSION.zip" \
+            --repo "${{ github.repository }}" --target "$SHA" \
             --title "AirCursor $VERSION" --generate-notes

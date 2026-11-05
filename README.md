@@ -117,7 +117,7 @@ The pointer and gesture core (`Sources/AirCursorCore`) is plain Swift with unit 
 
 ## Contributing
 
-Issues and PRs are welcome, especially gesture tuning across AirPods models. Please attach the Diagnostics output to bug reports.
+Issues and PRs are welcome, especially gesture tuning across AirPods models. Please attach the Diagnostics output to bug reports. Every PR gets an automated review against the project's rulebook, and merged app changes are released automatically. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

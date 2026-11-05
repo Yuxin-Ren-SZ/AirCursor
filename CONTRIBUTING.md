@@ -32,6 +32,12 @@ macOS ties Accessibility permission to the app's code signature. `scripts/build-
 - Run `make test` before opening a PR. CI runs the same tests.
 - To refresh the tour screenshots in `docs/`, run `open build/AirCursor.app --env AIRCURSOR_SNAPSHOT_DIR=/tmp/shots`.
 
+## How PRs are reviewed and released
+
+- **Every PR gets an automated review** by Claude against [CLAUDE.md](CLAUDE.md), the project's rulebook (what AirCursor must stay: hands-free, private, minimal permissions, safe input, compatible settings). The review is posted as a comment and labeled `ai-approved`, `ai-changes-requested` or `needs-owner-review`.
+- **PRs from the maintainer and collaborators** merge automatically once the review approves, CI passes, and no sensitive files (workflows, build scripts, Info.plist, entitlements, dependencies, CLAUDE.md) changed. **PRs from everyone else** get the same review, and a maintainer merges them by hand.
+- **Releases are automatic.** Merging a change to the app publishes the next patch version. Add the `release:minor` or `release:major` label for a bigger bump, or `skip-release` to hold it back. Documentation-only changes never release.
+
 ## Reporting bugs
 
 Please include the output of **Settings › Shortcuts & General › Diagnostics › Copy diagnostics**. It shows exactly which link in the chain (permissions, Bluetooth, audio route, motion) is failing.
