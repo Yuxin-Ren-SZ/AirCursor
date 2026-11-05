@@ -22,6 +22,7 @@ let package = Package(
             ]
         ),
         .testTarget(name: "AirCursorCoreTests", dependencies: ["AirCursorCore"]),
+        .testTarget(name: "AirCursorAppTests", dependencies: ["AirCursor"]),
     ],
     swiftLanguageModes: [.v5]
 )

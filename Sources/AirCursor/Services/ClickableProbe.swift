@@ -22,7 +22,15 @@ enum ClickableProbe {
     ]
 
     /// Asynchronously checks the point (global CG coordinates); completes on main.
-    static func check(_ point: CGPoint, completion: @escaping @MainActor (Bool) -> Void) {
+    @MainActor static func check(_ point: CGPoint, completion: @escaping @MainActor (Bool) -> Void) {
+        // Do not AX-hit-test our own SwiftUI windows from the worker queue. The
+        // query itself can enter SwiftUI/AppKit off-main and hang the UI before
+        // accessibilityVerdict's PID check ever runs.
+        if let window = ownWindow(at: point) {
+            let clickable = isInteractive(window) || cursorLooksClickable()
+            DispatchQueue.main.async { completion(clickable) }
+            return
+        }
         queue.async {
             let verdict = accessibilityVerdict(at: point)
             DispatchQueue.main.async {
@@ -30,7 +38,7 @@ enum ClickableProbe {
                     if let verdict {
                         completion(verdict)
                     } else {
-                        completion(isOwnInteractiveWindow(at: point) || cursorLooksClickable())
+                        completion(cursorLooksClickable())
                     }
                 }
             }
@@ -75,7 +83,10 @@ enum ClickableProbe {
     }
 
     /// Debug description of the element chain at a point, e.g. "AXButton[press] < AXGroup".
-    static func describe(_ point: CGPoint) -> String {
+    @MainActor static func describe(_ point: CGPoint) -> String {
+        if let window = ownWindow(at: point) {
+            return "AirCursor: own window (\(window.title)); AX query skipped"
+        }
         let systemWide = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(systemWide, 0.15)
         var hit: AXUIElement?
@@ -114,11 +125,18 @@ enum ClickableProbe {
         return value as? String
     }
 
-    /// Our own windows (the guided tour, Settings) are always fair game.
-    @MainActor private static func isOwnInteractiveWindow(at point: CGPoint) -> Bool {
+    /// Resolve the actual mouse target, not just a rectangle: another app may
+    /// cover our window. Mouse-transparent overlays are skipped by AppKit.
+    @MainActor private static func ownWindow(at point: CGPoint) -> NSWindow? {
         let cocoa = ScreenGeometry.cocoaPoint(from: point)
+        let number = NSWindow.windowNumber(at: cocoa, belowWindowWithWindowNumber: 0)
+        return NSApp.window(withWindowNumber: number)
+    }
+
+    /// Preserve the tour/Settings fallback without querying our own AX tree.
+    @MainActor private static func isInteractive(_ window: NSWindow) -> Bool {
         let titles: Set<String> = ["AirCursor", "Welcome to AirCursor"]
-        return NSApp.windows.contains { $0.isVisible && titles.contains($0.title) && $0.frame.contains(cocoa) }
+        return window.isVisible && titles.contains(window.title)
     }
 
     /// The system pointer turns into a pointing hand over links and many custom buttons
