@@ -1,6 +1,12 @@
 name: PR Review
 
-# Every PR gets a thorough Claude review against CLAUDE.md (the project rulebook).
+# Claude reviews PRs against CLAUDE.md (the project rulebook).
+#
+# Who gets reviewed (reviews use the owner's Claude plan, so strangers can't trigger them):
+# - Owner/collaborators: automatically, on every push.
+# - Everyone else: only after a maintainer adds the `ai-review` label. The label is removed
+#   after each review, so new commits need a maintainer to add it again.
+#
 # Only PRs from trusted authors (owner/collaborators, from a branch in this repo) are merged
 # automatically, and only if: Claude approves, no sensitive files changed, CI passes, and the
 # PR wasn't updated after the review. Merging an app change publishes a release.
@@ -9,17 +15,59 @@ name: PR Review
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-
-concurrency:
-  group: pr-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 permissions: {}
 
 jobs:
+  # Cheap, Claude-free check that decides whether this event may start a review.
+  gate:
+    if: github.event.action != 'labeled' || github.event.label.name == 'ai-review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+    outputs:
+      review: ${{ steps.decide.outputs.review }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      ACTION: ${{ github.event.action }}
+      AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+      DRAFT: ${{ github.event.pull_request.draft }}
+      SENDER: ${{ github.event.sender.login }}
+    steps:
+      - id: decide
+        run: |
+          review=false
+          case "$AUTHOR_ASSOCIATION" in OWNER|MEMBER|COLLABORATOR) trusted=true ;; *) trusted=false ;; esac
+
+          if [ "$DRAFT" = "true" ]; then
+            echo "Draft PR: no review yet."
+          elif [ "$ACTION" = "labeled" ]; then
+            # Only someone with write access may start a review by labeling.
+            perm=$(gh api "repos/$REPO/collaborators/$SENDER/permission" --jq .permission 2>/dev/null || echo none)
+            case "$perm" in
+              admin|maintain|write) review=true ;;
+              *) echo "::warning::$SENDER ($perm) can't start reviews." ;;
+            esac
+          elif [ "$trusted" = "true" ]; then
+            review=true
+          elif [ "$ACTION" = "opened" ]; then
+            gh pr comment "$PR" --repo "$REPO" --body "Thanks for the contribution! A maintainer will take a look and start the automated review (the \`ai-review\` label) when it's ready."
+          fi
+          echo "review=$review" >> "$GITHUB_OUTPUT"
+          echo "Review: $review (action=$ACTION, author=$AUTHOR_ASSOCIATION)" >> "$GITHUB_STEP_SUMMARY"
+
   review:
-    if: github.event.pull_request.draft == false
+    needs: gate
+    if: needs.gate.outputs.review == 'true'
+    # A newer push or approval replaces an in-progress review of the same PR.
+    concurrency:
+      group: pr-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -93,6 +141,8 @@ jobs:
             *)               label=needs-owner-review; VERDICT=needs_owner ;;
           esac
           gh pr edit "$PR" --repo "$REPO" --add-label "$label"
+          # One approval = one review: new commits need a maintainer to re-add the label.
+          gh pr edit "$PR" --repo "$REPO" --remove-label ai-review 2>/dev/null || true
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
           echo "Verdict: $VERDICT" >> "$GITHUB_STEP_SUMMARY"
 
