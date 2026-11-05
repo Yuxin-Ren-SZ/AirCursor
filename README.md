@@ -70,6 +70,16 @@ make install     # builds a universal app, copies it to /Applications, launches 
 
 `make run` builds and launches without installing. `make test` runs the unit tests. Building needs Xcode 16 or later.
 
+### Uninstall
+
+1. Quit AirCursor from its menu bar icon (**Quit**).
+2. Delete **AirCursor** from Applications.
+3. Optional: remove its settings and permissions:
+   ```bash
+   defaults delete io.github.m-afham.AirCursor
+   tccutil reset All io.github.m-afham.AirCursor
+   ```
+
 ## Permissions & privacy
 
 | Permission | Why |
