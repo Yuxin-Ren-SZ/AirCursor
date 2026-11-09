@@ -14,6 +14,10 @@
 </p>
 
 <p align="center">
+  <sub>Built by <a href="#about-the-author">Muhammad Afham</a>, senior iOS &amp; macOS engineer</sub>
+</p>
+
+<p align="center">
   <a href="https://github.com/m-afham/AirCursor/releases/latest"><img src="https://img.shields.io/github/v/release/m-afham/AirCursor?label=latest" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/macOS-15%2B-blue" alt="macOS 15+">
   <a href="https://github.com/m-afham/AirCursor/actions/workflows/ci.yml"><img src="https://github.com/m-afham/AirCursor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -127,7 +131,15 @@ The pointer and gesture core (`Sources/AirCursorCore`) is plain Swift with unit 
 
 ## Contributing
 
-Issues and PRs are welcome, especially gesture tuning across AirPods models. Please attach the Diagnostics output to bug reports. Every PR gets an automated review against the project's rulebook, and merged app changes are released automatically. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and PRs are welcome, especially gesture tuning across AirPods models. Please attach the Diagnostics output to bug reports. PRs get an automated review against the project's rulebook, and merged app changes are released automatically. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Using AirCursor? [Share how in Discussions](https://github.com/m-afham/AirCursor/discussions). And if it's useful to you, a ⭐ helps others find it.
+
+## About the author
+
+AirCursor is built by **Muhammad Afham**, a senior iOS & macOS engineer with 7+ years on Apple platforms and 25+ shipped apps. I'm open to senior roles, freelance projects and collaborations.
+
+[mafham.dev](https://mafham.dev) · [LinkedIn](https://www.linkedin.com/in/m-afham/) · [Book a call](https://topmate.io/m_afham)
 
 ## License
 

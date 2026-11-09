@@ -457,6 +457,24 @@ struct GeneralView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            Section("About") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Made by Muhammad Afham")
+                        .font(.callout.weight(.medium))
+                    Text("Free and open source. If AirCursor helps you, a star on GitHub helps others find it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 14) {
+                        Link("GitHub", destination: URL(string: "https://github.com/m-afham/AirCursor")!)
+                        Link("Share feedback", destination: URL(string: "https://github.com/m-afham/AirCursor/discussions")!)
+                        Link("mafham.dev", destination: URL(string: "https://mafham.dev")!)
+                    }
+                    .font(.callout)
+                    .padding(.top, 2)
+                }
+                .padding(.vertical, 2)
+            }
         }
         .formStyle(.grouped)
     }

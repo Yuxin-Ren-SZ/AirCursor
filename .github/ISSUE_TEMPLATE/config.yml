@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 Questions, ideas and show-and-tell
+    url: https://github.com/m-afham/AirCursor/discussions
+    about: Ask a question, suggest an idea, or share how you use AirCursor.
+  - name: 💼 Work with the author
+    url: https://mafham.dev
+    about: Hiring or looking to collaborate? Reach Muhammad Afham, the iOS & macOS engineer behind AirCursor.
