@@ -107,6 +107,15 @@ final class AppController: ObservableObject {
     private var housekeepingTicks = 0
     private var motionStartedAt: TimeInterval?
     private var lastMotionRestart: TimeInterval = 0
+    /// How long to wait for motion before restarting the stream. Starts generous and
+    /// doubles, because some AirPods (e.g. 1st-gen Pro) take several seconds to begin
+    /// streaming, and restarting too early kills the stream before it ever starts.
+    private var motionRetryDelay: TimeInterval = AppController.initialMotionRetryDelay
+    private static let initialMotionRetryDelay: TimeInterval = 10
+    private static let maxMotionRetryDelay: TimeInterval = 60
+    private var motionRestartCount = 0
+    /// Whether CoreMotion ever reported the headphones' motion link as connected.
+    private var motionLinkReported = false
     private var lastMotionError: String?
     private var started = false
 
@@ -126,7 +135,7 @@ final class AppController: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        Diagnostics.log.notice("AirCursor starting (accessibility: \(self.accessibilityTrusted, privacy: .public), motion: \(self.motionAuthorization.label, privacy: .public), onboarded: \(self.settings.hasCompletedOnboarding, privacy: .public))")
+        Diagnostics.log.notice("AirCursor starting (accessibility: \(self.accessibilityTrusted, privacy: .public), motion: \(self.motionAuthorization.label, privacy: .public), onboarded: \(self.settings.hasCompletedOnboarding, privacy: .public)) on \(SystemInfo.summary, privacy: .public)")
 
         motion.onSample = { [weak self] s in self?.handle(s) }
         motion.onConnectionChange = { [weak self] connected in self?.headphonesChanged(connected: connected) }
@@ -536,12 +545,15 @@ final class AppController: ObservableObject {
             if isDragging { endDrag(at: cursor ?? synth.currentLocation()) }
             Diagnostics.log.notice("Motion samples stopped arriving")
         }
-        // Watchdog: motion is on but silent → restart it (recovers after route changes).
+        // Watchdog: motion is on but silent → restart it (recovers after route changes),
+        // backing off so slow-starting headphones get time to begin streaming.
         if motion.isActive, !motionStreaming, let started = motionStartedAt,
-           now - started > 3, now - lastMotionRestart > 5,
+           now - started > motionRetryDelay, now - lastMotionRestart > motionRetryDelay,
            motionAuthorization != .denied, motionAuthorization != .restricted {
             lastMotionRestart = now
-            Diagnostics.log.notice("No motion data yet; restarting headphone motion")
+            motionRestartCount += 1
+            Diagnostics.log.notice("No motion data after \(Int(self.motionRetryDelay), privacy: .public)s; restarting headphone motion (restart \(self.motionRestartCount, privacy: .public), motion link reported: \(self.motionLinkReported, privacy: .public))")
+            motionRetryDelay = min(motionRetryDelay * 2, Self.maxMotionRetryDelay)
             routeAudioToHeadphonesIfNeeded()
             motion.restart()
         }
@@ -597,6 +609,9 @@ final class AppController: ObservableObject {
             connectedHeadphones: connectedHeadphones?.name,
             soundOutput: AudioRouter.defaultOutput().map { ($0.name, $0.isBluetooth) },
             headphonesAsAudio: headphoneAudio != nil,
+            motionLinkReported: motionLinkReported,
+            motionRestarts: motionRestartCount,
+            system: SystemInfo.summary,
             lastMotionError: lastMotionError,
             motionFilter: settings.pointer.filterMode.rawValue,
             inputGate: control.gate.state.rawValue,
@@ -654,6 +669,7 @@ final class AppController: ObservableObject {
     }
 
     private func headphonesChanged(connected: Bool) {
+        if connected { motionLinkReported = true }
         refreshDevices()
         if connected {
             if trackingEnabled { routeAudioToHeadphonesIfNeeded() }
@@ -698,19 +714,20 @@ final class AppController: ObservableObject {
         let hostNow = Self.now
         lastSampleHostTime = hostNow
         sampleCount += 1
+        if !motionStreaming {
+            motionStreaming = true
+            motionLinkReported = true
+            motionRetryDelay = Self.initialMotionRetryDelay
+            Diagnostics.log.notice("Motion samples arriving")
+            if motionAuthorization != .authorized { refreshPermissions() }
+        }
         if calibration.isActive {
-            if !motionStreaming { motionStreaming = true }
             calibration.push(sample, hostTime: hostNow)
             return // calibration/preview must never synthesize desktop input
         }
         if sample.isFinite {
             motionTrace.append(sample)
             if motionTrace.count > 250 { motionTrace.removeFirst(motionTrace.count - 250) }
-        }
-        if !motionStreaming {
-            motionStreaming = true
-            Diagnostics.log.notice("Motion samples arriving")
-            if motionAuthorization != .authorized { refreshPermissions() }
         }
 
         var enabled = settings.actions.enabledHeadGestures
@@ -1099,6 +1116,9 @@ struct DiagnosticsSnapshot: Equatable {
     var connectedHeadphones: String?
     var soundOutput: (name: String, isBluetooth: Bool)?
     var headphonesAsAudio = false
+    var motionLinkReported = false
+    var motionRestarts = 0
+    var system = ""
     var lastMotionError: String?
     var motionFilter = "kalman"
     var inputGate = "normal"
@@ -1117,7 +1137,9 @@ struct DiagnosticsSnapshot: Equatable {
             ("AirPods playing for this Mac", headphonesAsAudio ? "yes" : "no — choose them in Control Center › Sound", headphonesAsAudio),
             ("Mac sound output", soundOutput?.name ?? "unknown", soundOutput?.isBluetooth ?? false),
             ("Headphone motion available", motionAvailable ? "yes" : "no", motionAvailable),
+            ("Motion link reported by AirPods", motionLinkReported ? "yes" : "not yet", motionLinkReported),
             ("Motion updates running", motionActive ? "yes" : "no", motionActive),
+            ("Motion stream restarts", "\(motionRestarts)", motionRestarts == 0 || samplesReceived > 0),
             ("Motion samples received", "\(samplesReceived)\(last)", fresh),
             ("Audio keep-alive", audioKeepAlive ? "running" : "off", audioKeepAlive),
             ("Stem controls", stemControls ? "listening" : "off", stemControls),
@@ -1126,6 +1148,7 @@ struct DiagnosticsSnapshot: Equatable {
             ("Input state", inputGate, inputGate == "normal"),
             ("Acceleration observations", accelerationAvailable ? "available" : "unavailable — attitude only", accelerationAvailable),
             ("Attitude noise estimate", String(format: "%.3f°", measurementNoise), true),
+            ("Mac", system, true),
         ]
         if let lastMotionError { out.append(("Last motion error", lastMotionError, false)) }
         return out
@@ -1139,4 +1162,27 @@ struct TriggerEvent: Equatable {
     let trigger: Trigger
     let action: PointerAction
     let time = Date()
+}
+
+/// Mac model, chip and macOS version for diagnostics and bug reports.
+enum SystemInfo {
+    static let summary: String = {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let chip = isAppleSilicon ? "Apple silicon" : "Intel"
+        return "\(sysctlString("hw.model") ?? "Mac") · \(chip) · macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+    }()
+
+    static var isAppleSilicon: Bool {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        return sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 && value == 1
+    }
+
+    private static func sysctlString(_ name: String) -> String? {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return nil }
+        return String(cString: buffer)
+    }
 }
