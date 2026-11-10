@@ -1,8 +1,8 @@
 # AirCursor — project guide and review rulebook
 
 AirCursor is a free, open-source macOS menu bar app that turns AirPods head tracking into a
-mouse pointer. Turn your head to point. Rest on a button to click (smart hover click), or nod,
-or press the stem. It is hands-free, private (no network, no analytics), and simple.
+mouse pointer. Turn your head to point. Tilt left to click, right to right-click,
+or press the stem. Smart hover click and nod clicks are optional. It is hands-free, private (no network, no analytics), and simple.
 
 ## Architecture
 
@@ -17,9 +17,11 @@ or press the stem. It is hands-free, private (no network, no analytics), and sim
 
 ## What AirCursor must stay (the product contract)
 
-1. **Hands-free first.** The pointer follows the head via relative (velocity) mapping. Smart
-   hover click is the default tap. It only clicks things that are clickable (Accessibility
-   roles, compact pressable elements, pointing-hand cursor), never text being read. Nod and stem
+1. **Hands-free first.** The pointer follows the head via relative (velocity) mapping.
+   Tilt clicks are the default tap: left tilt left-clicks, right tilt right-clicks, once per
+   neutral-return cycle. Suspected repositioning slows movement and suppresses head/dwell clicks;
+   strong movement freezes motion input. Optional smart hover click only clicks things that are
+   clickable (Accessibility roles, compact pressable elements, pointing-hand cursor). Nod and stem
    press remain alternatives.
 2. **Effortless first run.** The guided tour is five steps (welcome, permissions, connect,
    try it, done). It opens automatically whenever setup is incomplete, resumes where it left

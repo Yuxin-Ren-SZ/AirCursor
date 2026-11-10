@@ -74,7 +74,7 @@ struct SetupView: View {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Use your AirPods as a mouse").font(.title2.bold())
-                    Text("Turn your head to move the pointer. Press the AirPods stem or nod to click. Three quick steps to get going.")
+                    Text("Turn your head to move the pointer. Tilt left to click, or tilt right to right-click. Three quick steps to get going.")
                         .foregroundStyle(.secondary)
                     Button("Take the guided tour") {
                         openWindow(id: WindowID.tour)
@@ -161,7 +161,7 @@ struct SetupView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("How to use it").font(.headline)
-                        Text("Turn your head → move · Press stem → click · Press twice → right‑click · Press three times → scroll mode · Nod → click · Shake → pause/resume · \(HotKey.toggleTracking.display) → pause/resume")
+                        Text("Turn your head → move · Press stem → click · Press twice → right‑click · Press three times → scroll mode · Tilt left / right → click / right-click · Shake → pause/resume · \(HotKey.toggleTracking.display) → pause/resume")
                             .font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -300,6 +300,22 @@ struct PointerSettingsView: View {
             Section("Live head tracking") {
                 HeadVisualizer(live: controller.live, tiltThreshold: controller.settings.gestures.tiltAngle)
                     .padding(.vertical, 6)
+                if controller.motionStreaming {
+                    Text(controller.live.inputState)
+                        .foregroundStyle(controller.live.inputState == "Ready" ? Color.secondary : .orange)
+                    Text(String(format: "Yaw speed: raw %.1f → filtered %.1f°/s · Pitch: raw %.1f → filtered %.1f°/s",
+                                controller.live.rawYawRate, controller.live.yawRate,
+                                controller.live.rawPitchRate, controller.live.pitchRate))
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    if let acceleration = controller.live.acceleration {
+                        Text(String(format: "Head acceleration: %.3f g", acceleration))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Button("Compare recent motion") { controller.compareRecentMotion() }
+                    if let comparison = controller.motionComparison {
+                        Text(comparison).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
                 if !controller.motionStreaming {
                     Text(controller.trackingEnabled ? "Waiting for motion data… make sure your AirPods are in your ears and connected to this Mac." : "Turn on head tracking to see live data.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -307,13 +323,17 @@ struct PointerSettingsView: View {
             }
 
             Section("Movement") {
+                Picker("Motion filter", selection: $controller.settings.pointer.filterMode) {
+                    Text("Kalman").tag(MotionFilterMode.kalman)
+                    Text("Original").tag(MotionFilterMode.legacy)
+                }
                 LabeledSlider(title: "Speed", value: $controller.settings.pointer.sensitivity, range: 0.2...4,
                               format: { String(format: "%.1f×", $0) })
                 LabeledSlider(title: "Acceleration", value: $controller.settings.pointer.acceleration, range: 0...2,
                               format: { String(format: "%.1f", $0) },
                               help: "Higher = quick head turns travel much farther; slow turns stay precise.")
-                LabeledSlider(title: "Steadiness (dead zone)", value: $controller.settings.pointer.deadzone, range: 0...20,
-                              format: { String(format: "%.0f°/s", $0) },
+                LabeledSlider(title: "Steadiness (dead zone)", value: $controller.settings.pointer.deadzone, range: 0...20, step: 0.1,
+                              format: { String(format: "%.1f°/s", $0) },
                               help: "Ignores tiny movements so the pointer holds still while you read.")
                 LabeledSlider(title: "Smoothing", value: $controller.settings.pointer.smoothing, range: 0...0.9,
                               format: { String(format: "%.0f%%", $0 * 100) },
@@ -322,6 +342,35 @@ struct PointerSettingsView: View {
                 Toggle("Invert up / down", isOn: $controller.settings.pointer.invertVertical)
             }
 
+            if controller.settings.pointer.filterMode == .kalman {
+                Section("Precision and travel") {
+                    LabeledSlider(title: "Precision gain", value: $controller.settings.pointer.precisionGain, range: 4...40,
+                                  format: { String(format: "%.0f points/°", $0) })
+                    LabeledSlider(title: "Travel gain", value: $controller.settings.pointer.travelGain, range: 20...120,
+                                  format: { String(format: "%.0f points/°", $0) })
+                    LabeledSlider(title: "Speed transition", value: $controller.settings.pointer.transitionSpeed, range: 5...80,
+                                  format: { String(format: "%.0f°/s", $0) })
+                    Toggle("Adapt steadiness to resting noise", isOn: $controller.settings.pointer.adaptiveDeadzone)
+                    Toggle("Learn sensor noise while still", isOn: $controller.settings.pointer.filter.learnStationaryNoise)
+                    LabeledSlider(title: "Sensor noise", value: $controller.settings.pointer.filter.measurementNoise, range: 0.02...0.5,
+                                  format: { String(format: "%.2f°", $0) },
+                                  help: "Starting attitude noise estimate. Higher smooths more; resting calibration can update it.")
+                    LabeledSlider(title: "Follow quick changes", value: $controller.settings.pointer.filter.processAcceleration, range: 20...400,
+                                  format: { String(format: "%.0f°/s²", $0) },
+                                  help: "Higher follows starts and stops faster, but also passes more sensor noise.")
+                    Text("Slow turns make small adjustments; faster turns travel farther. Added smoothing increases lag. The Original filter retains the previous movement curve.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section("Posture adjustments") {
+                Toggle("Reduce input while repositioning", isOn: $controller.settings.pointer.repositioning.enabled)
+                LabeledSlider(title: "Slow down above", value: $controller.settings.pointer.repositioning.cautionAcceleration, range: 0.02...0.15,
+                              format: { String(format: "%.3f g", $0) })
+                LabeledSlider(title: "Pause above", value: $controller.settings.pointer.repositioning.freezeAcceleration, range: 0.1...0.6,
+                              format: { String(format: "%.2f g", $0) })
+                Text("Possible posture adjustments slow movement and pause head clicks. Strong, sustained movement pauses the pointer until you settle. Acceleration is a hint, not a measurement of your position.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Scroll mode") {
                 LabeledSlider(title: "Scroll speed", value: $controller.settings.pointer.scrollSpeed, range: 0.2...4,
                               format: { String(format: "%.1f×", $0) })
@@ -369,7 +418,7 @@ struct GestureSettingsView: View {
                 LabeledSlider(title: "Nod size needed", value: $controller.settings.gestures.nodAmplitude, range: 3...20, step: 0.5,
                               format: { String(format: "%.1f°", $0) },
                               help: controller.lastNodDepth.map { String(format: "Your last nod was %.1f°. Lower = easier nods, but more accidental clicks.", $0) }
-                                ?? "Lower = easier nods, but more accidental clicks. The guided tour tunes this to your nod.")
+                                ?? "Lower = easier nods, but more accidental clicks. Enable a nod action above to use nod clicks.")
                 LabeledSlider(title: "Shake size needed", value: $controller.settings.gestures.shakeAmplitude, range: 4...25, step: 0.5,
                               format: { String(format: "%.1f°", $0) })
                 LabeledSlider(title: "Tilt angle", value: $controller.settings.gestures.tiltAngle, range: 10...40,
@@ -377,7 +426,7 @@ struct GestureSettingsView: View {
                 LabeledSlider(title: "Tilt hold", value: $controller.settings.gestures.tiltHold, range: 0.1...1.0,
                               format: { String(format: "%.1fs", $0) })
                 Toggle("Swap tilt left / right", isOn: $controller.settings.gestures.swapTiltDirection)
-                Text("Clicks from a nod or shake land where the pointer was just before you moved, so the gesture itself never moves your target.")
+                Text("Tilt left for a left click and right for a right click. Hold until the ring fills, then return to neutral. The pointer stays on your target throughout the tilt.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

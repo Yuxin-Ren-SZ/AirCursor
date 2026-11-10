@@ -17,6 +17,9 @@ struct LiveReadout: Equatable {
     var hasData = false
     var yaw = 0.0, pitch = 0.0, roll = 0.0          // degrees
     var yawRate = 0.0, pitchRate = 0.0              // deg/s
+    var inputState = "Ready"
+    var acceleration: Double?
+    var rawYawRate = 0.0, rawPitchRate = 0.0
     var relativeRoll = 0.0                          // degrees from neutral
 }
 
@@ -42,6 +45,7 @@ final class AppController: ObservableObject {
     @Published private(set) var accessibilityTrusted = EventSynthesizer.isTrusted
     @Published private(set) var motionAuthorization: CMAuthorizationStatus = HeadphoneMotionService.authorizationStatus
     @Published private(set) var live = LiveReadout()
+    @Published private(set) var motionComparison: String?
     @Published private(set) var lastTriggerDescription: String?
     /// Every handled trigger, for the guided tour to react to.
     @Published private(set) var lastTriggerEvent: TriggerEvent?
@@ -72,8 +76,10 @@ final class AppController: ObservableObject {
 
     // MARK: Pipeline state
 
-    private var differentiator = MotionDifferentiator()
-    private var gestures: GestureDetector
+    private var control: HeadControlPipeline
+    private var motionUpdate: HeadControlUpdate?
+    private var tiltAnchor: CGPoint?
+    private var motionTrace: [MotionSample] = []
     private var smoother = PointerSmoother()
     private var dwell: DwellDetector
     private var history = CursorHistory(capacity: 360)
@@ -107,7 +113,7 @@ final class AppController: ObservableObject {
         let loaded = stored.migrated()
         if loaded != stored { SettingsStore.save(loaded) }
         settings = loaded
-        gestures = GestureDetector(settings: loaded.gestures)
+        control = HeadControlPipeline(pointer: loaded.pointer, gestures: loaded.gestures)
         dwell = DwellDetector(settings: loaded.dwell)
     }
 
@@ -208,10 +214,17 @@ final class AppController: ObservableObject {
         trackingEnabled = on
         Diagnostics.log.notice("Tracking \(on ? "on" : "off", privacy: .public)")
         if on { routeAudioToHeadphonesIfNeeded() }
-        differentiator.reset()
+        // Preserve a just-fired shake's cooldown and settling latch across pause/resume.
+        control.reset(preservingGestures: true)
+        motionUpdate = nil
+        tiltAnchor = nil
         smoother.reset()
         cursor = nil
         lastFrame = nil
+        history.removeAll()
+        lastPosted.removeAll()
+        lastFrameDelta = 0
+        scrollRemainder = .zero
         if !on {
             releaseButtons()
             dwell.reset()
@@ -228,6 +241,9 @@ final class AppController: ObservableObject {
         guard newMode != mode else { return }
         if isDragging { endDrag(at: cursor ?? synth.currentLocation()) }
         mode = newMode
+        control.cancelGestures()
+        motionUpdate = nil
+        tiltAnchor = nil
         scrollRemainder = .zero
         smoother.reset()
         dwell.reset()
@@ -268,7 +284,7 @@ final class AppController: ObservableObject {
         var fresh = AppSettings()
         fresh.hasCompletedOnboarding = onboarded
         settings = fresh
-        gestures.reset()
+        control.gestures.reset()
         toast("Settings reset", symbol: "arrow.counterclockwise")
     }
 
@@ -334,7 +350,7 @@ final class AppController: ObservableObject {
     func beginNodCalibration() {
         guard nodCalibration == nil else { return }
         nodCalibration = []
-        gestures.settings.nodAmplitude = min(settings.gestures.nodAmplitude, Self.calibrationNodAmplitude)
+        control.gestures.settings.nodAmplitude = min(settings.gestures.nodAmplitude, Self.calibrationNodAmplitude)
         Diagnostics.log.notice("Nod calibration started")
     }
 
@@ -344,14 +360,14 @@ final class AppController: ObservableObject {
         guard let depths = nodCalibration else { return }
         nodCalibration = nil
         guard !depths.isEmpty else {
-            gestures.settings = settings.gestures
+            control.gestures.settings = settings.gestures
             return
         }
         let median = depths.sorted()[depths.count / 2]
         let tuned = (min(max(median * 0.7, 5), 14) * 2).rounded() / 2
         Diagnostics.log.notice("Nod calibration: median \(String(format: "%.1f", median), privacy: .public)° → threshold \(String(format: "%.1f", tuned), privacy: .public)°")
         settings.gestures.nodAmplitude = tuned
-        gestures.settings = settings.gestures
+        control.gestures.settings = settings.gestures
     }
 
     // MARK: Services orchestration
@@ -407,9 +423,14 @@ final class AppController: ObservableObject {
     }
 
     private func applySettings() {
-        gestures.settings = settings.gestures
+        control.pointerSettings = settings.pointer
+        control.suspend()
+        smoother.reset()
+        motionUpdate = nil
+        tiltAnchor = nil
+        control.gestures.settings = settings.gestures
         if nodCalibration != nil {
-            gestures.settings.nodAmplitude = min(settings.gestures.nodAmplitude, Self.calibrationNodAmplitude)
+            control.gestures.settings.nodAmplitude = min(settings.gestures.nodAmplitude, Self.calibrationNodAmplitude)
         }
         dwell.settings = settings.dwell
         if !settings.dwell.enabled { cursorOverlay.hide() }
@@ -488,7 +509,11 @@ final class AppController: ObservableObject {
             connectedHeadphones: connectedHeadphones?.name,
             soundOutput: AudioRouter.defaultOutput().map { ($0.name, $0.isBluetooth) },
             headphonesAsAudio: headphoneAudio != nil,
-            lastMotionError: lastMotionError
+            lastMotionError: lastMotionError,
+            motionFilter: settings.pointer.filterMode.rawValue,
+            inputGate: control.gate.state.rawValue,
+            accelerationAvailable: control.gate.accelerationAvailable,
+            measurementNoise: control.estimator.measurementNoise
         )
         if snapshot != diagnostics { diagnostics = snapshot }
     }
@@ -544,11 +569,16 @@ final class AppController: ObservableObject {
         refreshDevices()
         if connected {
             if trackingEnabled { routeAudioToHeadphonesIfNeeded() }
-            differentiator.reset()
-            gestures.resetTiltBaseline()
+            control.reset()
+            motionUpdate = nil
+            tiltAnchor = nil
+            control.gestures.resetTiltBaseline()
             toast("AirPods head tracking connected", symbol: "airpodspro")
         } else {
             motionStreaming = false
+            control.suspend()
+            motionUpdate = nil
+            tiltAnchor = nil
             smoother.reset()
             releaseButtons()
             if trackingEnabled { toast("AirPods disconnected", symbol: "exclamationmark.triangle.fill") }
@@ -568,10 +598,21 @@ final class AppController: ObservableObject {
 
     // MARK: Motion → pointer
 
+    func compareRecentMotion() {
+        let report = MotionReplay.run(motionTrace, pointer: settings.pointer,
+                                      gestures: settings.gestures, enabled: settings.actions.enabledHeadGestures)
+        motionComparison = String(format: "%d recent samples · angular speed RMS: raw %.2f°/s → filtered %.2f°/s · %d suppressed samples. Compare while resting to assess jitter.",
+                                  report.sampleCount, report.rawRateRMS, report.filteredRateRMS, report.suppressedSamples)
+    }
+
     private func handle(_ sample: MotionSample) {
         let hostNow = Self.now
         lastSampleHostTime = hostNow
         sampleCount += 1
+        if sample.isFinite {
+            motionTrace.append(sample)
+            if motionTrace.count > 250 { motionTrace.removeFirst(motionTrace.count - 250) }
+        }
         if !motionStreaming {
             motionStreaming = true
             Diagnostics.log.notice("Motion samples arriving")
@@ -580,34 +621,52 @@ final class AppController: ObservableObject {
 
         var enabled = settings.actions.enabledHeadGestures
         if nodCalibration != nil { enabled.insert(.nod) }
-        if let event = gestures.process(sample, enabled: enabled) {
-            Diagnostics.log.notice("Gesture \(event.gesture.rawValue, privacy: .public) (\(String(format: "%.1f", event.magnitude), privacy: .public)°)")
+        let update = control.process(sample, enabled: enabled)
+        motionUpdate = update
+
+        if !update.allowsAutomaticClicks { dwell.reset() }
+        if update.holdingPointer {
+            smoother.reset()
+            scrollRemainder = .zero
+        }
+        if update.gate == .frozen || !update.accepted { releaseButtons() }
+
+        // Lock the target at the first likely tilt, before its hold-to-click interval.
+        if trackingEnabled, mode == .pointer, let start = update.tiltStartTime, tiltAnchor == nil {
+            let hostStart = start + (hostNow - sample.timestamp)
+            let before = history.position(at: hostStart - 0.06)
+            tiltAnchor = before.map { CGPoint(x: $0.x, y: $0.y) } ?? cursor ?? synth.currentLocation()
+            if let anchor = tiltAnchor { cursor = anchor; post(anchor) }
+        }
+        if !update.holdingPointer { tiltAnchor = nil }
+
+        if let event = update.gesture {
             if event.gesture == .nod {
                 lastNodDepth = event.magnitude
                 nodCalibration?.append(event.magnitude)
             }
-            // Convert from the sensor clock to the host clock used by the cursor history.
             let start = event.startTime + (hostNow - sample.timestamp)
             handle(trigger: Trigger(event.gesture), gestureStart: start)
         }
-
-        guard let rates = differentiator.push(sample) else { return }
-        let rollDegrees = AngleMath.degrees(sample.roll)
-
-        if trackingEnabled {
-            smoother.setTarget(PointerMapper.cursorVelocity(rates: rates, settings: settings.pointer), at: hostNow)
+        if trackingEnabled, motionUpdate != nil {
+            smoother.setTarget(update.targetVelocity, at: hostNow)
         }
 
-        if hostNow - lastLivePublish > 0.1 {
+        if sample.isFinite, hostNow - lastLivePublish > 0.1 {
             lastLivePublish = hostNow
+            let status: String
+            if update.gate == .frozen { status = "Motion paused — settling" }
+            else if update.gate == .cautious { status = "Repositioning — slower movement, clicks paused" }
+            else if update.holdingPointer { status = "Tilt click — return to neutral to point" }
+            else { status = "Ready" }
             live = LiveReadout(
                 hasData: true,
-                yaw: AngleMath.degrees(sample.yaw),
-                pitch: AngleMath.degrees(sample.pitch),
-                roll: rollDegrees,
-                yawRate: rates.yaw,
-                pitchRate: rates.pitch,
-                relativeRoll: gestures.relativeRoll(rollDegrees)
+                yaw: AngleMath.degrees(sample.yaw), pitch: AngleMath.degrees(sample.pitch),
+                roll: AngleMath.degrees(sample.roll),
+                yawRate: update.rates?.yaw ?? 0, pitchRate: update.rates?.pitch ?? 0,
+                inputState: status, acceleration: sample.userAcceleration?.length,
+                rawYawRate: update.rawRates?.yaw ?? 0, rawPitchRate: update.rawRates?.pitch ?? 0,
+                relativeRoll: control.gestures.relativeRoll(AngleMath.degrees(sample.roll))
             )
         }
     }
@@ -618,13 +677,23 @@ final class AppController: ObservableObject {
         let dt = min(max(now - (lastFrame ?? now), 0), 0.05)
         lastFrame = now
 
-        let delta = smoother.step(now: now, dt: dt, smoothing: settings.pointer.smoothing)
-        syncCursorWithSystem()
+        if motionUpdate != nil, now - lastSampleHostTime > PointerSmoother.staleAfter {
+            control.suspend()
+            motionUpdate = nil
+            tiltAnchor = nil
+            smoother.reset()
+            dwell.reset()
+            scrollRemainder = .zero
+            releaseButtons()
+            live.inputState = "Motion paused — waiting for samples"
+        }
+        var delta = smoother.step(now: now, dt: dt, smoothing: settings.pointer.smoothing)
+        if syncCursorWithSystem() { delta = .zero }
         guard var position = cursor else { return }
 
         switch mode {
         case .pointer:
-            if delta.length > 0.01 {
+            if delta.length > 0.000001 {
                 let next = screens.clamp(CGPoint(x: position.x + delta.x, y: position.y + delta.y), from: position)
                 lastFrameDelta = hypot(next.x - position.x, next.y - position.y)
                 position = next
@@ -648,7 +717,7 @@ final class AppController: ObservableObject {
         history.append(Vec2(position.x, position.y), at: now)
 
         if mode == .pointer, settings.dwell.enabled, settings.actions[.dwell] != .none,
-           motionStreaming, !isDragging, !userIsTyping {
+           motionStreaming, motionUpdate?.allowsAutomaticClicks == true, !isDragging, !userIsTyping {
             let update = dwell.update(position: Vec2(position.x, position.y), time: now)
             var progress = update.progress
             var fired = update.fired
@@ -672,7 +741,7 @@ final class AppController: ObservableObject {
             cursorOverlay.update(dwellProgress: progress, at: position)
             if fired { handle(trigger: .dwell, gestureStart: nil) }
         } else {
-            cursorOverlay.update(dwellProgress: nil, at: position)
+            cursorOverlay.update(dwellProgress: motionUpdate?.tiltProgress, at: position)
         }
     }
 
@@ -683,12 +752,12 @@ final class AppController: ObservableObject {
 
     /// Adopts the real cursor position if something else (a mouse, trackpad) moved it.
     /// Our own recent posts are tolerated because the system position can lag a frame.
-    private func syncCursorWithSystem() {
+    private func syncCursorWithSystem() -> Bool {
         let actual = synth.currentLocation()
         guard let ours = cursor else {
             cursor = actual
             lastPosted = [actual]
-            return
+            return true
         }
         let tolerance = max(6, lastFrameDelta * 2 + 6)
         let candidates = lastPosted.isEmpty ? [ours] : lastPosted
@@ -698,7 +767,12 @@ final class AppController: ObservableObject {
             lastPosted = [actual]
             smoother.reset()
             dwell.reset()
+            control.cancelGestures()
+            motionUpdate = nil
+            tiltAnchor = nil
+            return true
         }
+        return false
     }
 
     private func post(_ point: CGPoint) {
@@ -712,6 +786,9 @@ final class AppController: ObservableObject {
     private func handle(trigger: Trigger, gestureStart: TimeInterval?) {
         let action = settings.actions[trigger]
         guard action != .none else { return }
+        if trigger.headGesture != nil || trigger == .dwell {
+            guard motionUpdate?.accepted == true, motionUpdate?.gate == .normal else { return }
+        }
         guard trackingEnabled || action == .toggleTracking else { return }
         // Head gestures can't pause tracking during setup: people look around a lot
         // while granting permissions and putting AirPods in.
@@ -723,7 +800,9 @@ final class AppController: ObservableObject {
 
         var point = cursor ?? synth.currentLocation()
         // A nod/shake nudges the cursor; put it back where it was when the gesture began.
-        if let start = gestureStart, trackingEnabled, mode == .pointer,
+        if (trigger == .tiltLeft || trigger == .tiltRight), let anchor = tiltAnchor {
+            point = anchor
+        } else if let start = gestureStart, trackingEnabled, mode == .pointer,
            let before = history.position(at: start - 0.06) {
             point = CGPoint(x: before.x, y: before.y)
             cursor = point
@@ -770,7 +849,10 @@ final class AppController: ObservableObject {
             cursor = center
             post(center)
             smoother.reset()
-            gestures.resetTiltBaseline()
+            control.reset()
+            motionUpdate = nil
+            tiltAnchor = nil
+            history.removeAll()
             toast("Recentered", symbol: "scope")
         case .missionControl, .appWindows, .previousSpace, .nextSpace, .back, .forward, .screenshot:
             if let shortcut = action.keyShortcut {
@@ -918,6 +1000,10 @@ struct DiagnosticsSnapshot: Equatable {
     var soundOutput: (name: String, isBluetooth: Bool)?
     var headphonesAsAudio = false
     var lastMotionError: String?
+    var motionFilter = "kalman"
+    var inputGate = "normal"
+    var accelerationAvailable = false
+    var measurementNoise = 0.15
 
     static func == (a: Self, b: Self) -> Bool { a.text == b.text }
 
@@ -936,6 +1022,10 @@ struct DiagnosticsSnapshot: Equatable {
             ("Audio keep-alive", audioKeepAlive ? "running" : "off", audioKeepAlive),
             ("Stem controls", stemControls ? "listening" : "off", stemControls),
             ("Head tracking", trackingEnabled ? "on" : "off", trackingEnabled),
+            ("Motion filter", motionFilter, true),
+            ("Input state", inputGate, inputGate == "normal"),
+            ("Acceleration observations", accelerationAvailable ? "available" : "unavailable — attitude only", accelerationAvailable),
+            ("Attitude noise estimate", String(format: "%.3f°", measurementNoise), true),
         ]
         if let lastMotionError { out.append(("Last motion error", lastMotionError, false)) }
         return out

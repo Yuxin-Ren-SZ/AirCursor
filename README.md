@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Your AirPods are now a mouse.</b><br>
-  Turn your head to point. Rest on a button to click. Completely hands-free on your Mac.
+  Turn your head to point. Tilt left to click, right to right-click. Completely hands-free on your Mac.
 </p>
 
 <p align="center">
@@ -35,19 +35,19 @@ AirCursor reads the motion sensors already built into your AirPods and turns hea
 | You do | AirCursor does *(defaults, all remappable)* |
 |---|---|
 | Turn your head | Moves the pointer (smooth, accelerated, works across all your displays) |
-| Rest the pointer on a button | **Hover click.** A ring fills, then it clicks. Only buttons, links, tabs, menus, fields and Dock icons count, so resting on text you're reading never clicks |
+| Tilt left / right | **Left click / right click.** Hold briefly until the ring fills, then return upright. The pointer stays on your target |
 | Press the stem once | Left click |
 | Press the stem twice | Right click |
 | Press the stem three times | Scroll mode: look up/down/left/right to scroll |
-| Nod | Left click, landing where you pointed *before* the nod |
+| Nod | Optional action; disabled by default |
 | Shake your head | Pause / resume |
-| Tilt left / right | Your choice: Back/Forward, switch Spaces, Mission Control… |
+| Rest the pointer on a button | Optional smart hover click; enable it in Settings |
 
 Other actions you can assign: double click, middle click, drag lock, recenter, App windows, the screenshot tool, and more. Shortcuts: **⌃⌥T** pause · **⌃⌥S** scroll mode · **⌃⌥C** recenter · **⌃⌥D** drag.
 
 ### A one-minute guided tour
 
-On first launch AirCursor takes you through two permissions and connecting your AirPods, then has you **try it once for real**: point at a button with your head and hold still until it clicks, or nod. While you do that, it learns how big your natural nod is and tunes nod detection to match. A 3D pair of earbuds mirrors your head in real time the whole way through. If you leave for System Settings to grant a permission, the tour comes back and resumes on the same step.
+On first launch AirCursor takes you through two permissions and connecting your AirPods, then has you **try it once for real**: point at a button with your head, tilt left and hold briefly to click, then return upright. Right tilts right-click. Hover and nod clicks remain optional in Settings. A 3D pair of earbuds mirrors your head in real time the whole way through. If you leave for System Settings to grant a permission, the tour comes back and resumes on the same step.
 
 <p align="center">
   <img src="docs/screenshots/tryit.png" width="410" alt="Try it: point and nod">
@@ -104,7 +104,9 @@ Motion data is processed in memory on your Mac and never stored or sent anywhere
 
 **Hover click is too fast, too slow, or clicks things I didn't mean to.** Go to **Settings › Clicks & Gestures › Hover click** to change the rest time, or turn it off. It pauses while you type, and it only clicks things macOS reports as clickable.
 
-**Nods don't click, or click by accident.** Go to **Settings › Clicks & Gestures** and adjust **Nod size needed**. The hint underneath shows how big your last nod was. Replaying the guided tour also re-tunes it automatically.
+**Tilt clicks are too hard or happen accidentally.** Go to **Settings › Clicks & Gestures** to adjust the tilt angle and hold time. Return upright between clicks. Swap tilt directions if your headphones report left and right the other way. Nod clicking is optional and disabled by default.
+
+**The pointer slows down or pauses while moving.** Settings › Pointer shows the input state. Posture adjustments slow movement and suppress head clicks; strong, sustained acceleration pauses input until you settle. Adjust the posture thresholds if ordinary head turns trigger it. Select Original to compare the previous pointer mapping.
 
 **Stem presses play/pause my music instead.** macOS sends AirPods presses to the "Now Playing" app. AirCursor claims that role while tracking, but if music is playing in another app, that app may win. Head gestures always work.
 
@@ -113,21 +115,22 @@ Motion data is processed in memory on your Mac and never stored or sent anywhere
 ## How it works
 
 ```
-CMHeadphoneMotionManager (~25 Hz attitude)
-   → MotionDifferentiator      angular rates (deg/s), wrap-around + gap safe
-   → GestureDetector           nod / shake / tilt (direction-agnostic, with cooldown)
-   → PointerMapper             dead zone + sensitivity + bounded acceleration → px/s
-   → PointerSmoother (120 Hz)  frame-rate-independent easing; stops when samples go stale
+CMHeadphoneMotionManager (~25 Hz attitude + acceleration)
+   → KalmanMotionEstimator     angle + angular velocity; timestamp-aware, outlier rejection
+   → RepositioningGate         normal / slower with clicks suppressed / frozen
+   → GestureDetector           tilt hold-to-click; target locked through return to neutral
+   → PointerResponse           radial dead zone + precision-to-travel gain → points/s
+   → PointerSmoother (120 Hz)  light easing; stops when samples go stale
    → EventSynthesizer          CGEvent move / click / drag / scroll / keys
 MPRemoteCommandCenter          stem presses (play/pause, next, previous) → triggers
 ```
 
 - **Relative (velocity) mapping.** The pointer follows how fast you turn your head, not your absolute head angle. Nothing to calibrate, and no drift.
-- **Gestures don't move your target.** Recent pointer positions are buffered. When a nod or shake is recognized, the click lands where you were pointing when the gesture began.
+- **Gestures don't move your target.** A likely tilt locks the pointer before the hold interval. It stays locked through the tilt and return; optional nod/shake actions also restore the earlier target.
 - **Your mouse still works.** Move a real mouse or trackpad and AirCursor picks up from the new position.
 - **Safe by default.** A held drag is released on pause, disconnect, stalled motion or sleep.
 
-The pointer and gesture core (`Sources/AirCursorCore`) is plain Swift with unit tests. See [CONTRIBUTING.md](CONTRIBUTING.md) for a tour of the code.
+See [motion processing and tuning](docs/motion-control.md) for filter parameters, the acceleration gate, and the future sensor boundary. The pointer and gesture core (`Sources/AirCursorCore`) is plain Swift with unit tests. See [CONTRIBUTING.md](CONTRIBUTING.md) for a tour of the code.
 
 ## Contributing
 

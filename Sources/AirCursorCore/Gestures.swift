@@ -52,6 +52,14 @@ public struct GestureDetector: Sendable {
     private var tiltCandidate: (gesture: HeadGesture, since: TimeInterval)?
     private var tiltLatched = false
     private var offNeutralSince: TimeInterval?
+    private var tiltNeedsNeutral = false
+    private var neutralSamples = 0
+    private var tiltBaselineConfirmed = false
+    private var tiltOffNeutral = false
+    /// From the half-threshold crossing until return to neutral, including follow-through.
+    public private(set) var tiltStartTime: TimeInterval?
+    public private(set) var tiltProgress: Double?
+    public var tiltWaitingForNeutral: Bool { tiltNeedsNeutral && tiltOffNeutral }
 
     /// A head held off-neutral this long is a new posture (or a stale baseline taken
     /// while the AirPods were being put in), so it becomes the new neutral.
@@ -86,6 +94,12 @@ public struct GestureDetector: Sendable {
         offNeutralSince = nil
         tiltCandidate = nil
         tiltLatched = false
+        tiltNeedsNeutral = false
+        tiltStartTime = nil
+        tiltProgress = nil
+        neutralSamples = 0
+        tiltBaselineConfirmed = false
+        tiltOffNeutral = false
     }
 
     public mutating func reset() {
@@ -97,8 +111,24 @@ public struct GestureDetector: Sendable {
         resetTiltBaseline()
     }
 
+    /// Cancel clicks during bad signals, body movement or external mouse takeover.
+    /// Keep the neutral reference: capturing the current tilted pose would re-arm it.
+    public mutating func cancelPendingGestures() {
+        history.removeAll()
+        lastRawYaw = nil
+        awaitingStill = true
+        stillSince = nil
+        tiltCandidate = nil
+        tiltProgress = nil
+        tiltStartTime = nil
+        tiltLatched = true
+        tiltNeedsNeutral = true
+        offNeutralSince = nil
+    }
+
     /// Feed every motion sample (angles in radians, as CoreMotion reports them).
     public mutating func process(_ sample: MotionSample, enabled: Set<HeadGesture>) -> GestureEvent? {
+        guard sample.isFinite else { cancelPendingGestures(); return nil }
         let t = sample.timestamp
         let rawYaw = AngleMath.degrees(sample.yaw)
         let pitch = AngleMath.degrees(sample.pitch)
@@ -106,8 +136,7 @@ public struct GestureDetector: Sendable {
 
         // Unwrap yaw so a turn across ±180° stays continuous; drop history after gaps.
         if let last = history.last, t - last.t > MotionDifferentiator.maxInterval || t <= last.t {
-            history.removeAll()
-            lastRawYaw = nil
+            cancelPendingGestures()
         }
         let yaw: Double
         if let prev = lastRawYaw, let last = history.last {
@@ -251,49 +280,74 @@ public struct GestureDetector: Sendable {
     private mutating func updateTilt(rollDegrees: Double, time t: TimeInterval, enabled: Set<HeadGesture>) -> GestureEvent? {
         guard let base = rollBaseline else {
             rollBaseline = rollDegrees
+            neutralSamples = 1
             return nil
         }
         let rel = AngleMath.wrappedDeltaDegrees(rollDegrees, base)
+        tiltOffNeutral = abs(rel) >= settings.tiltAngle * 0.5
 
         if abs(rel) < settings.tiltAngle * 0.5 {
+            neutralSamples += 1
+            if neutralSamples >= 4 { tiltBaselineConfirmed = true }
             // Near neutral: slowly follow posture changes and re-arm.
             rollBaseline = base + rel * 0.02
             tiltLatched = false
+            tiltNeedsNeutral = false
+            tiltStartTime = nil
+            tiltProgress = nil
             tiltCandidate = nil
             offNeutralSince = nil
             return nil
         }
 
         if let since = offNeutralSince {
-            if t - since > Self.reNeutralAfter {
+            if t - since > Self.reNeutralAfter,
+               (!tiltLatched && !tiltNeedsNeutral) || !tiltBaselineConfirmed {
                 rollBaseline = rollDegrees
                 offNeutralSince = nil
                 tiltCandidate = nil
                 tiltLatched = false
+                tiltStartTime = nil
+                tiltProgress = nil
+                neutralSamples = 0
+                tiltBaselineConfirmed = false
                 return nil
             }
         } else {
             offNeutralSince = t
         }
 
-        guard enabled.contains(.tiltLeft) || enabled.contains(.tiltRight), !tiltLatched else { return nil }
+        guard enabled.contains(.tiltLeft) || enabled.contains(.tiltRight) else {
+            tiltStartTime = nil
+            tiltProgress = nil
+            return nil
+        }
+        // A canceled tilt may still hold pointing until neutral, but must not create
+        // a new target anchor (especially after a physical mouse moved the cursor).
+        guard !tiltNeedsNeutral else { return nil }
+        tiltStartTime = tiltStartTime ?? t
+        guard !tiltLatched else { return nil }
 
         guard abs(rel) >= settings.tiltAngle else {
             tiltCandidate = nil
+            tiltProgress = nil
             return nil
         }
 
         let gesture: HeadGesture = (rel > 0) != settings.swapTiltDirection ? .tiltRight : .tiltLeft
         guard let candidate = tiltCandidate, candidate.gesture == gesture else {
             tiltCandidate = (gesture, t)
+            tiltProgress = 0
             return nil
         }
+        tiltProgress = min(1, (t - candidate.since) / max(settings.tiltHold, 0.01))
         guard t - candidate.since >= settings.tiltHold else { return nil }
 
         tiltLatched = true
         tiltCandidate = nil
+        tiltProgress = nil
         guard enabled.contains(gesture), t >= cooldownUntil else { return nil }
-        return GestureEvent(gesture: gesture, startTime: candidate.since, time: t, magnitude: abs(rel))
+        return GestureEvent(gesture: gesture, startTime: tiltStartTime ?? candidate.since, time: t, magnitude: abs(rel))
     }
 }
 

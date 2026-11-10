@@ -2,7 +2,7 @@ import CoreMotion
 import AirCursorCore
 
 /// Streams head attitude from AirPods Pro / Max / 3rd gen+ / Beats Fit Pro via CoreMotion.
-final class HeadphoneMotionService: NSObject, CMHeadphoneMotionManagerDelegate {
+final class HeadphoneMotionService: NSObject, CMHeadphoneMotionManagerDelegate, HeadMotionSource {
     private let manager = CMHeadphoneMotionManager()
 
     var onSample: ((MotionSample) -> Void)?
@@ -36,7 +36,14 @@ final class HeadphoneMotionService: NSObject, CMHeadphoneMotionManagerDelegate {
             }
             guard let motion else { return }
             let a = motion.attitude
-            self.onSample?(MotionSample(timestamp: motion.timestamp, yaw: a.yaw, pitch: a.pitch, roll: a.roll))
+            let q = a.quaternion, r = motion.rotationRate
+            let u = motion.userAcceleration, g = motion.gravity
+            self.onSample?(MotionSample(
+                timestamp: motion.timestamp, yaw: a.yaw, pitch: a.pitch, roll: a.roll,
+                rotationRate: Vec3(r.x, r.y, r.z), userAcceleration: Vec3(u.x, u.y, u.z),
+                gravity: Vec3(g.x, g.y, g.z),
+                orientation: OrientationQuaternion(x: q.x, y: q.y, z: q.z, w: q.w)
+            ))
         }
     }
 

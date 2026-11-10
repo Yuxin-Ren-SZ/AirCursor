@@ -269,11 +269,14 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s.gestures, GestureSettings())
     }
 
-    func testV1SettingsMigrateToSmartHoverClick() throws {
+    func testV1SettingsMigrateThroughSmartHoverToTiltClicks() throws {
         let v1 = #"{"dwell":{"enabled":false,"duration":1.0},"gestures":{"nodAmplitude":9},"pointer":{"sensitivity":2}}"#
         let s = try JSONDecoder().decode(AppSettings.self, from: Data(v1.utf8)).migrated()
-        XCTAssertTrue(s.dwell.enabled)
+        XCTAssertFalse(s.dwell.enabled) // v4 replaces the stock hover/nod defaults
         XCTAssertTrue(s.dwell.smart)
+        XCTAssertEqual(s.actions[.tiltLeft], .leftClick)
+        XCTAssertEqual(s.actions[.tiltRight], .rightClick)
+        XCTAssertEqual(s.actions[.nod], .none)
         XCTAssertEqual(s.gestures.nodAmplitude, GestureSettings().nodAmplitude)
         XCTAssertEqual(s.pointer.sensitivity, 2)          // unrelated choices survive
         XCTAssertEqual(s.version, AppSettings.currentVersion)

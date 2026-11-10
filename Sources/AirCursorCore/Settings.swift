@@ -14,9 +14,16 @@ public struct PointerSettings: Codable, Equatable, Sendable {
     /// How much faster the cursor goes for quick head turns (0 = linear).
     public var acceleration: Double = 0.6
     /// Head rotation speed (deg/s) below which the cursor holds still. Filters tremor.
-    public var deadzone: Double = 3.0
+    public var deadzone: Double = 1.2
     /// 0 = raw, 0.95 = very smooth/laggy.
-    public var smoothing: Double = 0.55
+    public var smoothing: Double = 0.18
+    public var filterMode: MotionFilterMode = .kalman
+    public var filter = KalmanSettings()
+    public var repositioning = RepositioningSettings()
+    public var precisionGain: Double = 14
+    public var travelGain: Double = 56
+    public var transitionSpeed: Double = 35
+    public var adaptiveDeadzone: Bool = true
     public var invertHorizontal: Bool = false
     public var invertVertical: Bool = false
     public var scrollSpeed: Double = 1.0
@@ -31,6 +38,13 @@ public struct PointerSettings: Codable, Equatable, Sendable {
         acceleration = c.value(.acceleration, default: d.acceleration)
         deadzone = c.value(.deadzone, default: d.deadzone)
         smoothing = c.value(.smoothing, default: d.smoothing)
+        filterMode = c.value(.filterMode, default: d.filterMode)
+        filter = c.value(.filter, default: d.filter)
+        repositioning = c.value(.repositioning, default: d.repositioning)
+        precisionGain = c.value(.precisionGain, default: d.precisionGain)
+        travelGain = c.value(.travelGain, default: d.travelGain)
+        transitionSpeed = c.value(.transitionSpeed, default: d.transitionSpeed)
+        adaptiveDeadzone = c.value(.adaptiveDeadzone, default: d.adaptiveDeadzone)
         invertHorizontal = c.value(.invertHorizontal, default: d.invertHorizontal)
         invertVertical = c.value(.invertVertical, default: d.invertVertical)
         scrollSpeed = c.value(.scrollSpeed, default: d.scrollSpeed)
@@ -48,9 +62,9 @@ public struct GestureSettings: Codable, Equatable, Sendable {
     /// Time window for the four swings of a shake.
     public var shakeWindow: Double = 1.4
     /// Roll (degrees) away from your neutral posture that counts as a tilt.
-    public var tiltAngle: Double = 22
+    public var tiltAngle: Double = 18
     /// How long a tilt must be held before it fires.
-    public var tiltHold: Double = 0.3
+    public var tiltHold: Double = 0.25
     /// Flip which side counts as "left" if your AirPods report roll the other way.
     public var swapTiltDirection: Bool = false
     /// Quiet period after any gesture so one movement can't fire twice.
@@ -74,7 +88,7 @@ public struct GestureSettings: Codable, Equatable, Sendable {
 
 /// "Hover click": rest the pointer and it clicks.
 public struct DwellSettings: Codable, Equatable, Sendable {
-    public var enabled: Bool = true
+    public var enabled: Bool = false
     /// Only click things that are clickable (buttons, links, tabs, menus, fields…),
     /// so resting on text you're reading never clicks.
     public var smart: Bool = true
@@ -97,7 +111,7 @@ public struct DwellSettings: Codable, Equatable, Sendable {
 
 public struct AppSettings: Codable, Equatable, Sendable {
     /// Bumped when defaults change in a way existing users should receive.
-    public static let currentVersion = 3
+    public static let currentVersion = 4
     public var version: Int = AppSettings.currentVersion
 
     public var pointer = PointerSettings()
@@ -125,6 +139,16 @@ public struct AppSettings: Codable, Equatable, Sendable {
         gestures = c.value(.gestures, default: d.gestures)
         dwell = c.value(.dwell, default: d.dwell)
         actions = c.value(.actions, default: d.actions)
+        if version < 4 {
+            actions = .preTiltDefaults
+            if let raw = try? c.decode([String: String].self, forKey: .actions) {
+                for (key, value) in raw {
+                    if let trigger = Trigger(rawValue: key), let action = PointerAction(rawValue: value) {
+                        actions[trigger] = action
+                    }
+                }
+            }
+        }
         stemControlsEnabled = c.value(.stemControlsEnabled, default: d.stemControlsEnabled)
         keepAudioRouteActive = c.value(.keepAudioRouteActive, default: d.keepAudioRouteActive)
         routeAudioToHeadphones = c.value(.routeAudioToHeadphones, default: d.routeAudioToHeadphones)
@@ -142,12 +166,24 @@ extension AppSettings {
             // v2: smart hover click becomes the default hands-free tap, and nods are
             // measured in degrees (smaller default).
             s.dwell = DwellSettings()
+            s.dwell.enabled = true // historical v2 default
             s.gestures.nodAmplitude = GestureSettings().nodAmplitude
         }
         if s.version < 3 {
             // v3: shake needs bigger, repeated swings so glancing around never pauses.
             s.gestures.shakeAmplitude = GestureSettings().shakeAmplitude
             s.gestures.shakeWindow = GestureSettings().shakeWindow
+        }
+        if s.version < 4 {
+            // Only replace the old stock bindings. Deliberate customizations survive.
+            if s.actions == .preTiltDefaults {
+                s.actions = ActionMap()
+                s.dwell.enabled = false
+            }
+            if s.pointer.deadzone == 3 { s.pointer.deadzone = PointerSettings().deadzone }
+            if s.pointer.smoothing == 0.55 { s.pointer.smoothing = PointerSettings().smoothing }
+            if s.gestures.tiltAngle == 22 { s.gestures.tiltAngle = GestureSettings().tiltAngle }
+            if s.gestures.tiltHold == 0.3 { s.gestures.tiltHold = GestureSettings().tiltHold }
         }
         s.version = AppSettings.currentVersion
         return s

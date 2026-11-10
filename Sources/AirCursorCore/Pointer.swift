@@ -46,6 +46,7 @@ public struct PointerSmoother: Sendable {
     public init() {}
 
     public mutating func setTarget(_ v: Vec2, at time: TimeInterval) {
+        guard v.x.isFinite, v.y.isFinite, time.isFinite else { reset(); return }
         target = v
         targetTime = time
     }
@@ -58,14 +59,52 @@ public struct PointerSmoother: Sendable {
 
     /// Advances by `dt` seconds and returns the cursor displacement for this frame.
     public mutating func step(now: TimeInterval, dt: Double, smoothing: Double) -> Vec2 {
-        guard dt > 0 else { return .zero }
+        guard dt.isFinite, now.isFinite, dt > 0 else { return .zero }
         let goal = (now - targetTime) > Self.staleAfter ? .zero : target
-        let s = min(max(smoothing, 0), 0.97)
+        let s = bounded(smoothing, 0.18, 0, 0.97)
         // Frame-rate independent exponential smoothing (s is the per-1/60s retention).
         let alpha = 1 - pow(s, dt * 60)
         velocity += (goal - velocity) * alpha
         if goal == .zero, velocity.length < 2 { velocity = .zero }
         return velocity * dt
+    }
+}
+
+/// Radial dead zone with hysteresis and a smooth, bounded precision-to-travel gain.
+/// One gain for both axes preserves diagonal direction.
+public struct PointerResponse: Sendable {
+    private var active = false
+    private var restNoise = 0.2
+    public init() {}
+    public mutating func reset() { active = false }
+
+    public mutating func velocity(rates: AngularRates, settings: PointerSettings,
+                                  mayLearnNoise: Bool = true) -> Vec2 {
+        let magnitude = hypot(rates.yaw, rates.pitch)
+        guard magnitude.isFinite else { reset(); return .zero }
+        let base = bounded(settings.deadzone, 1.2, 0, 20)
+        if mayLearnNoise, !active, magnitude < max(base, 0.5) {
+            restNoise += (magnitude - restNoise) * 0.04
+        }
+        let deadzone = settings.adaptiveDeadzone && base > 0
+            ? max(base, min(base * 2, restNoise * 2)) : base
+        // Enter above the full threshold; leave below 65%. A continuous soft knee
+        // keeps the change in gain at the threshold small.
+        if active { active = magnitude > deadzone * 0.65 }
+        else { active = magnitude > deadzone }
+        guard active, magnitude > 0 else { return .zero }
+        let effective = max(0, magnitude - deadzone * 0.65)
+        let knee = deadzone > 0 ? min(1, effective / max(deadzone * 0.7, 0.01)) : 1
+        let precision = bounded(settings.precisionGain, 14, 1, 100)
+        let travel = max(precision, bounded(settings.travelGain, 56, 1, 200))
+        let transition = bounded(settings.transitionSpeed, 35, 5, 120)
+        let t = min(1, max(0, (effective - 5) / transition))
+        let blend = t * t * (3 - 2 * t)
+        let gain = precision + (travel - precision) * blend * bounded(settings.acceleration, 0.6, 0, 2) / 0.6
+        let speed = effective * knee * gain * bounded(settings.sensitivity, 1, 0.05, 8)
+        let x = -rates.yaw / magnitude * speed * (settings.invertHorizontal ? -1 : 1)
+        let y = -rates.pitch / magnitude * speed * (settings.invertVertical ? -1 : 1)
+        return Vec2(x, y)
     }
 }
 

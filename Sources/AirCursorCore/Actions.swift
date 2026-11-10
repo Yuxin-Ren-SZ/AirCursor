@@ -101,16 +101,26 @@ public struct ActionMap: Codable, Equatable, Sendable {
         .stemSingle: .leftClick,
         .stemDouble: .rightClick,
         .stemTriple: .toggleScrollMode,
-        .nod: .leftClick,
+        .nod: .none,
         .shake: .toggleTracking,
-        .tiltLeft: .none,
-        .tiltRight: .none,
+        .tiltLeft: .leftClick,
+        .tiltRight: .rightClick,
         .dwell: .leftClick,
     ]
 
     private var bindings: [Trigger: PointerAction]
 
     public init() { bindings = Self.defaults }
+
+    /// Decode old documents against their original defaults before migration, so
+    /// missing tilt bindings do not silently change a customized action map.
+    static var preTiltDefaults: ActionMap {
+        var map = ActionMap()
+        map[.nod] = .leftClick
+        map[.tiltLeft] = .none
+        map[.tiltRight] = .none
+        return map
+    }
 
     public subscript(trigger: Trigger) -> PointerAction {
         get { bindings[trigger] ?? Self.defaults[trigger] ?? .none }
