@@ -97,8 +97,9 @@ public struct PointerResponse: Sendable {
         let knee = deadzone > 0 ? min(1, effective / max(deadzone * 0.7, 0.01)) : 1
         let precision = bounded(settings.precisionGain, 14, 1, 100)
         let travel = max(precision, bounded(settings.travelGain, 56, 1, 200))
-        let transition = bounded(settings.transitionSpeed, 35, 5, 120)
-        let t = min(1, max(0, (effective - 5) / transition))
+        let transition = bounded(settings.transitionSpeed, 35, 0.5, 120)
+        let precisionSpeed = bounded(settings.precisionSpeed, 5, 0.5, 100)
+        let t = min(1, max(0, (effective - precisionSpeed) / transition))
         let blend = t * t * (3 - 2 * t)
         let gain = precision + (travel - precision) * blend * bounded(settings.acceleration, 0.6, 0, 2) / 0.6
         let speed = effective * knee * gain * bounded(settings.sensitivity, 1, 0.05, 8)

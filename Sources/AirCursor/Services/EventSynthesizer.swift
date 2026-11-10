@@ -3,8 +3,19 @@ import CoreGraphics
 
 /// Posts synthetic mouse, scroll and keyboard events. Requires Accessibility permission.
 final class EventSynthesizer {
-    private let source = CGEventSource(stateID: .hidSystemState)
+    private lazy var source = CGEventSource(stateID: .hidSystemState)
+    private let postEvent: (CGEvent) -> Void
     private(set) var isLeftButtonDown = false
+    /// Final output guard for calibration. Releasing a held button is always allowed.
+    var inputEnabled = true {
+        didSet {
+            if !inputEnabled, isLeftButtonDown { leftUp(at: currentLocation()) }
+        }
+    }
+
+    init(postEvent: @escaping (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) }) {
+        self.postEvent = postEvent
+    }
 
     static var isTrusted: Bool { AXIsProcessTrusted() }
 
@@ -20,47 +31,47 @@ final class EventSynthesizer {
     }
 
     func move(to point: CGPoint) {
+        guard inputEnabled else { return }
         let type: CGEventType = isLeftButtonDown ? .leftMouseDragged : .mouseMoved
-        CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?
-            .post(tap: .cghidEventTap)
+        if let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left) { postEvent(event) }
     }
 
     func click(_ button: CGMouseButton, at point: CGPoint, count: Int = 1) {
+        guard inputEnabled else { return }
         let (downType, upType) = Self.types(for: button)
         for n in 1...max(1, count) {
             for type in [downType, upType] {
                 guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { continue }
                 e.setIntegerValueField(.mouseEventClickState, value: Int64(n))
-                e.post(tap: .cghidEventTap)
+                postEvent(e)
             }
         }
     }
 
     func leftDown(at point: CGPoint) {
-        guard !isLeftButtonDown else { return }
-        CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)?
-            .post(tap: .cghidEventTap)
+        guard inputEnabled, !isLeftButtonDown else { return }
+        if let event = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left) { postEvent(event) }
         isLeftButtonDown = true
     }
 
     func leftUp(at point: CGPoint) {
         guard isLeftButtonDown else { return }
-        CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?
-            .post(tap: .cghidEventTap)
+        if let event = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) { postEvent(event) }
         isLeftButtonDown = false
     }
 
     /// Pixel-precise scroll. Positive `vertical` scrolls up, positive `horizontal` scrolls left.
     func scroll(vertical: Int32, horizontal: Int32) {
-        CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: vertical, wheel2: horizontal, wheel3: 0)?
-            .post(tap: .cghidEventTap)
+        guard inputEnabled else { return }
+        if let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: vertical, wheel2: horizontal, wheel3: 0) { postEvent(event) }
     }
 
     func keyStroke(_ keyCode: CGKeyCode, flags: CGEventFlags) {
+        guard inputEnabled else { return }
         for down in [true, false] {
             guard let e = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: down) else { continue }
             e.flags = flags
-            e.post(tap: .cghidEventTap)
+            postEvent(e)
         }
     }
 

@@ -22,6 +22,7 @@ public struct PointerSettings: Codable, Equatable, Sendable {
     public var repositioning = RepositioningSettings()
     public var precisionGain: Double = 14
     public var travelGain: Double = 56
+    public var precisionSpeed: Double = 5
     public var transitionSpeed: Double = 35
     public var adaptiveDeadzone: Bool = true
     public var invertHorizontal: Bool = false
@@ -43,6 +44,7 @@ public struct PointerSettings: Codable, Equatable, Sendable {
         repositioning = c.value(.repositioning, default: d.repositioning)
         precisionGain = c.value(.precisionGain, default: d.precisionGain)
         travelGain = c.value(.travelGain, default: d.travelGain)
+        precisionSpeed = c.value(.precisionSpeed, default: d.precisionSpeed)
         transitionSpeed = c.value(.transitionSpeed, default: d.transitionSpeed)
         adaptiveDeadzone = c.value(.adaptiveDeadzone, default: d.adaptiveDeadzone)
         invertHorizontal = c.value(.invertHorizontal, default: d.invertHorizontal)
@@ -65,6 +67,11 @@ public struct GestureSettings: Codable, Equatable, Sendable {
     public var tiltAngle: Double = 18
     /// How long a tilt must be held before it fires.
     public var tiltHold: Double = 0.25
+    /// Calibrated sides may differ; nil retains the common, manually chosen threshold.
+    public var leftTiltAngle: Double?
+    public var rightTiltAngle: Double?
+    public var leftTiltHold: Double?
+    public var rightTiltHold: Double?
     /// Flip which side counts as "left" if your AirPods report roll the other way.
     public var swapTiltDirection: Bool = false
     /// Quiet period after any gesture so one movement can't fire twice.
@@ -81,8 +88,20 @@ public struct GestureSettings: Codable, Equatable, Sendable {
         shakeWindow = c.value(.shakeWindow, default: d.shakeWindow)
         tiltAngle = c.value(.tiltAngle, default: d.tiltAngle)
         tiltHold = c.value(.tiltHold, default: d.tiltHold)
+        leftTiltAngle = c.value(.leftTiltAngle, default: nil)
+        rightTiltAngle = c.value(.rightTiltAngle, default: nil)
+        leftTiltHold = c.value(.leftTiltHold, default: nil)
+        rightTiltHold = c.value(.rightTiltHold, default: nil)
         swapTiltDirection = c.value(.swapTiltDirection, default: d.swapTiltDirection)
         cooldown = c.value(.cooldown, default: d.cooldown)
+    }
+
+    public func angle(for gesture: HeadGesture) -> Double {
+        bounded((gesture == .tiltLeft ? leftTiltAngle : rightTiltAngle) ?? tiltAngle, 18, 3, 40)
+    }
+
+    public func hold(for gesture: HeadGesture) -> Double {
+        bounded((gesture == .tiltLeft ? leftTiltHold : rightTiltHold) ?? tiltHold, 0.25, 0.1, 1)
     }
 }
 
@@ -128,6 +147,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var showHUD: Bool = true
     public var showClickPulse: Bool = true
     public var hasCompletedOnboarding: Bool = false
+    public var developerModeEnabled: Bool = false
+    public var calibrationProfile: CalibrationProfile?
+    public var calibrationBackup: CalibrationBackup?
 
     public init() {}
 
@@ -155,6 +177,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         showHUD = c.value(.showHUD, default: d.showHUD)
         showClickPulse = c.value(.showClickPulse, default: d.showClickPulse)
         hasCompletedOnboarding = c.value(.hasCompletedOnboarding, default: d.hasCompletedOnboarding)
+        developerModeEnabled = c.value(.developerModeEnabled, default: d.developerModeEnabled)
+        calibrationProfile = c.value(.calibrationProfile, default: nil)
+        calibrationBackup = c.value(.calibrationBackup, default: nil)
     }
 }
 

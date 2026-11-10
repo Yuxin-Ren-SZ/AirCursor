@@ -284,9 +284,12 @@ public struct GestureDetector: Sendable {
             return nil
         }
         let rel = AngleMath.wrappedDeltaDegrees(rollDegrees, base)
-        tiltOffNeutral = abs(rel) >= settings.tiltAngle * 0.5
+        let gesture: HeadGesture = (rel > 0) != settings.swapTiltDirection ? .tiltRight : .tiltLeft
+        let threshold = settings.angle(for: gesture)
+        let neutralThreshold = min(settings.angle(for: .tiltLeft), settings.angle(for: .tiltRight)) * 0.5
+        tiltOffNeutral = abs(rel) >= neutralThreshold
 
-        if abs(rel) < settings.tiltAngle * 0.5 {
+        if abs(rel) < neutralThreshold {
             neutralSamples += 1
             if neutralSamples >= 4 { tiltBaselineConfirmed = true }
             // Near neutral: slowly follow posture changes and re-arm.
@@ -325,23 +328,28 @@ public struct GestureDetector: Sendable {
         // A canceled tilt may still hold pointing until neutral, but must not create
         // a new target anchor (especially after a physical mouse moved the cursor).
         guard !tiltNeedsNeutral else { return nil }
+        guard abs(rel) >= threshold * 0.5 else {
+            tiltCandidate = nil
+            tiltProgress = nil
+            return nil
+        }
         tiltStartTime = tiltStartTime ?? t
         guard !tiltLatched else { return nil }
 
-        guard abs(rel) >= settings.tiltAngle else {
+        guard abs(rel) >= threshold else {
             tiltCandidate = nil
             tiltProgress = nil
             return nil
         }
 
-        let gesture: HeadGesture = (rel > 0) != settings.swapTiltDirection ? .tiltRight : .tiltLeft
         guard let candidate = tiltCandidate, candidate.gesture == gesture else {
             tiltCandidate = (gesture, t)
             tiltProgress = 0
             return nil
         }
-        tiltProgress = min(1, (t - candidate.since) / max(settings.tiltHold, 0.01))
-        guard t - candidate.since >= settings.tiltHold else { return nil }
+        let hold = settings.hold(for: gesture)
+        tiltProgress = min(1, (t - candidate.since) / hold)
+        guard t - candidate.since >= hold else { return nil }
 
         tiltLatched = true
         tiltCandidate = nil

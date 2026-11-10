@@ -26,6 +26,15 @@ struct AirCursorApp: App {
         .defaultSize(width: 860, height: 620)
         .defaultLaunchBehavior(.suppressed)
 
+        Window("Motion calibration", id: WindowID.calibration) {
+            CalibrationView()
+                .environmentObject(controller)
+                .environmentObject(controller.calibration)
+                .frame(minWidth: 800, minHeight: 650)
+        }
+        .defaultSize(width: 900, height: 750)
+        .defaultLaunchBehavior(.suppressed)
+
         // First launch opens the guided tour; afterwards AirCursor lives in the menu bar.
         Window("Welcome to AirCursor", id: WindowID.tour) {
             TourView()
@@ -56,6 +65,7 @@ private struct MenuBarLabel: View {
 enum WindowID {
     static let main = "main"
     static let tour = "tour"
+    static let calibration = "calibration"
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

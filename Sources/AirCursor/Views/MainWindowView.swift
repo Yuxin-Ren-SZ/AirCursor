@@ -2,7 +2,7 @@ import SwiftUI
 import AirCursorCore
 
 enum Pane: String, CaseIterable, Identifiable {
-    case setup, devices, pointer, gestures, shortcuts
+    case setup, devices, pointer, gestures, shortcuts, developer
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .pointer: "Pointer"
         case .gestures: "Clicks & Gestures"
         case .shortcuts: "Shortcuts & General"
+        case .developer: "Developer"
         }
     }
 
@@ -23,6 +24,7 @@ enum Pane: String, CaseIterable, Identifiable {
         case .pointer: "cursorarrow.motionlines"
         case .gestures: "hand.tap"
         case .shortcuts: "keyboard"
+        case .developer: "waveform.path"
         }
     }
 }
@@ -33,7 +35,7 @@ struct MainWindowView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(Pane.allCases, selection: $pane) { p in
+            List(Pane.allCases.filter { $0 != .developer || controller.settings.developerModeEnabled }, selection: $pane) { p in
                 Label(p.title, systemImage: p.symbol).tag(p)
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
@@ -45,6 +47,7 @@ struct MainWindowView: View {
                 case .pointer: PointerSettingsView()
                 case .gestures: GestureSettingsView()
                 case .shortcuts: GeneralView()
+                case .developer: DeveloperSettingsView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -54,6 +57,9 @@ struct MainWindowView: View {
             controller.windowVisibilityChanged()
         }
         .onDisappear { controller.windowVisibilityChanged() }
+        .onChange(of: controller.settings.developerModeEnabled) { _, enabled in
+            if !enabled, pane == .developer { pane = .shortcuts }
+        }
         .alert("AirCursor", isPresented: Binding(get: { controller.lastError != nil }, set: { if !$0 { controller.clearError() } })) {
             Button("OK") { controller.clearError() }
         } message: {
@@ -152,7 +158,7 @@ struct SetupView: View {
                     }
                 }
                 if controller.motionStreaming || controller.live.hasData {
-                    HeadVisualizer(live: controller.live, tiltThreshold: controller.settings.gestures.tiltAngle)
+                    HeadVisualizer(live: controller.live, tiltThreshold: min(controller.settings.gestures.angle(for: .tiltLeft), controller.settings.gestures.angle(for: .tiltRight)))
                         .padding(.vertical, 6)
                 }
             }
@@ -298,7 +304,7 @@ struct PointerSettingsView: View {
     var body: some View {
         Form {
             Section("Live head tracking") {
-                HeadVisualizer(live: controller.live, tiltThreshold: controller.settings.gestures.tiltAngle)
+                HeadVisualizer(live: controller.live, tiltThreshold: min(controller.settings.gestures.angle(for: .tiltLeft), controller.settings.gestures.angle(for: .tiltRight)))
                     .padding(.vertical, 6)
                 if controller.motionStreaming {
                     Text(controller.live.inputState)
@@ -348,8 +354,10 @@ struct PointerSettingsView: View {
                                   format: { String(format: "%.0f points/°", $0) })
                     LabeledSlider(title: "Travel gain", value: $controller.settings.pointer.travelGain, range: 20...120,
                                   format: { String(format: "%.0f points/°", $0) })
-                    LabeledSlider(title: "Speed transition", value: $controller.settings.pointer.transitionSpeed, range: 5...80,
+                    LabeledSlider(title: "Speed transition", value: $controller.settings.pointer.transitionSpeed, range: 0.5...80,
                                   format: { String(format: "%.0f°/s", $0) })
+                    LabeledSlider(title: "Precision speed range", value: $controller.settings.pointer.precisionSpeed, range: 0.5...60,
+                                  format: { String(format: "%.1f°/s", $0) })
                     Toggle("Adapt steadiness to resting noise", isOn: $controller.settings.pointer.adaptiveDeadzone)
                     Toggle("Learn sensor noise while still", isOn: $controller.settings.pointer.filter.learnStationaryNoise)
                     LabeledSlider(title: "Sensor noise", value: $controller.settings.pointer.filter.measurementNoise, range: 0.02...0.5,
@@ -421,10 +429,22 @@ struct GestureSettingsView: View {
                                 ?? "Lower = easier nods, but more accidental clicks. Enable a nod action above to use nod clicks.")
                 LabeledSlider(title: "Shake size needed", value: $controller.settings.gestures.shakeAmplitude, range: 4...25, step: 0.5,
                               format: { String(format: "%.1f°", $0) })
-                LabeledSlider(title: "Tilt angle", value: $controller.settings.gestures.tiltAngle, range: 10...40,
-                              format: { String(format: "%.0f°", $0) })
-                LabeledSlider(title: "Tilt hold", value: $controller.settings.gestures.tiltHold, range: 0.1...1.0,
-                              format: { String(format: "%.1fs", $0) })
+                Toggle("Separate left and right tilt settings", isOn: separateTilts)
+                if separateTilts.wrappedValue {
+                    LabeledSlider(title: "Left tilt angle", value: tiltAngle(.tiltLeft), range: 3...40, step: 0.1,
+                                  format: { String(format: "%.1f°", $0) })
+                    LabeledSlider(title: "Right tilt angle", value: tiltAngle(.tiltRight), range: 3...40, step: 0.1,
+                                  format: { String(format: "%.1f°", $0) })
+                    LabeledSlider(title: "Left hold", value: tiltHold(.tiltLeft), range: 0.1...1,
+                                  format: { String(format: "%.2fs", $0) })
+                    LabeledSlider(title: "Right hold", value: tiltHold(.tiltRight), range: 0.1...1,
+                                  format: { String(format: "%.2fs", $0) })
+                } else {
+                    LabeledSlider(title: "Tilt angle", value: $controller.settings.gestures.tiltAngle, range: 3...40, step: 0.1,
+                                  format: { String(format: "%.1f°", $0) })
+                    LabeledSlider(title: "Tilt hold", value: $controller.settings.gestures.tiltHold, range: 0.1...1.0,
+                                  format: { String(format: "%.2fs", $0) })
+                }
                 Toggle("Swap tilt left / right", isOn: $controller.settings.gestures.swapTiltDirection)
                 Text("Tilt left for a left click and right for a right click. Hold until the ring fills, then return to neutral. The pointer stays on your target throughout the tilt.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -447,6 +467,31 @@ struct GestureSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var separateTilts: Binding<Bool> {
+        Binding(get: { controller.settings.gestures.leftTiltAngle != nil || controller.settings.gestures.rightTiltAngle != nil }, set: { enabled in
+            var gestures = controller.settings.gestures
+            gestures.leftTiltAngle = enabled ? gestures.tiltAngle : nil
+            gestures.rightTiltAngle = enabled ? gestures.tiltAngle : nil
+            gestures.leftTiltHold = enabled ? gestures.tiltHold : nil
+            gestures.rightTiltHold = enabled ? gestures.tiltHold : nil
+            controller.settings.gestures = gestures
+        })
+    }
+
+    private func tiltAngle(_ side: HeadGesture) -> Binding<Double> {
+        Binding(get: { controller.settings.gestures.angle(for: side) }, set: { value in
+            if side == .tiltLeft { controller.settings.gestures.leftTiltAngle = value }
+            else { controller.settings.gestures.rightTiltAngle = value }
+        })
+    }
+
+    private func tiltHold(_ side: HeadGesture) -> Binding<Double> {
+        Binding(get: { controller.settings.gestures.hold(for: side) }, set: { value in
+            if side == .tiltLeft { controller.settings.gestures.leftTiltHold = value }
+            else { controller.settings.gestures.rightTiltHold = value }
+        })
     }
 
     private func binding(_ trigger: Trigger) -> Binding<PointerAction> {
@@ -484,6 +529,12 @@ struct GeneralView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Show on‑screen status messages", isOn: $controller.settings.showHUD)
                 Toggle("Show a ripple where clicks land", isOn: $controller.settings.showClickPulse)
+                Toggle("Developer mode", isOn: $controller.settings.developerModeEnabled)
+                if controller.settings.developerModeEnabled {
+                    Button("Calibrate personal motion controls…") { controller.showCalibration() }
+                    Text("Developer adds live signal inspection, guided calibration and a safe virtual pointer preview.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             Section("Tips") {

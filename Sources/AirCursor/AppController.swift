@@ -19,6 +19,7 @@ struct LiveReadout: Equatable {
     var yawRate = 0.0, pitchRate = 0.0              // deg/s
     var inputState = "Ready"
     var acceleration: Double?
+    var accelerationVector: Vec3?
     var rawYawRate = 0.0, rawPitchRate = 0.0
     var relativeRoll = 0.0                          // degrees from neutral
 }
@@ -61,6 +62,9 @@ final class AppController: ObservableObject {
     @Published private(set) var needsAudioHandoff = false
 
     let pairing = PairingService()
+    let calibration = MotionCalibrationController()
+    private var resumeAfterCalibration = false
+    private var preCalibrationGestures: GestureDetector?
 
     // MARK: Services
 
@@ -180,13 +184,14 @@ final class AppController: ObservableObject {
     /// Tracking is on by default, so the moment Accessibility is granted the pointer
     /// starts following your head (and asking for Motion, if not yet allowed).
     private func autoStartIfReady() {
-        guard !didAutoStart, !trackingEnabled, accessibilityTrusted else { return }
+        guard !calibration.isActive, !didAutoStart, !trackingEnabled, accessibilityTrusted else { return }
         didAutoStart = true
         Diagnostics.log.notice("Accessibility granted; tracking on")
         setTracking(true, announce: false)
     }
 
     func shutdown() {
+        calibration.finish()
         releaseButtons()
         stem.stop()
         keepAlive.stop()
@@ -199,6 +204,10 @@ final class AppController: ObservableObject {
     func toggleTracking() { setTracking(!trackingEnabled) }
 
     func setTracking(_ on: Bool, announce: Bool = true) {
+        if on, calibration.isActive {
+            toast("Finish or cancel calibration to resume head control", symbol: "slider.horizontal.3")
+            return
+        }
         if on {
             accessibilityTrusted = EventSynthesizer.isTrusted
             guard accessibilityTrusted else {
@@ -344,6 +353,73 @@ final class AppController: ObservableObject {
 
     func clearError() { lastError = nil }
 
+    // MARK: Personal motion calibration
+
+    func showCalibration() {
+        guard settings.developerModeEnabled else { return }
+        windowOpener?(WindowID.calibration)
+        NSApp.activate()
+    }
+
+    func beginCalibration() {
+        guard settings.developerModeEnabled, !calibration.isActive else { return }
+        resumeAfterCalibration = trackingEnabled
+        preCalibrationGestures = control.gestures
+        calibration.begin()
+        setTracking(false, announce: false)
+        releaseButtons()
+        synth.inputEnabled = false
+        cursorOverlay.hide()
+        motionRequested = true
+        routeAudioToHeadphonesIfNeeded()
+        updateServices()
+    }
+
+    func reviewCalibration() {
+        calibration.analyze(using: settings, screenWidth: screens.display(containing: synth.currentLocation()).width)
+    }
+
+    func finishCalibration(apply: Bool = false) {
+        guard calibration.isActive else { return }
+        let report = calibration.report
+        if apply, report == nil || !calibration.readyToApply { return }
+        let neutralRoll = calibration.recordedNeutralRoll
+        let sourceChanged = calibration.sourceChanged
+        calibration.finish() // discard raw samples before saving derived settings
+        if apply, let report {
+            var updated = settings
+            updated.calibrationBackup = CalibrationBackup(pointer: settings.pointer, gestures: settings.gestures,
+                                                          profile: settings.calibrationProfile)
+            updated.pointer = report.pointer
+            updated.gestures = report.gestures
+            updated.calibrationProfile = report.profile
+            settings = updated
+        }
+        control.reset(); motionUpdate = nil; smoother.reset(); tiltAnchor = nil
+        if sourceChanged {
+            resumeAfterCalibration = false
+        } else if let neutralRoll {
+            control.gestures.resetTiltBaseline(to: neutralRoll)
+            control.cancelGestures()
+        } else if let previous = preCalibrationGestures {
+            control.gestures = previous
+            control.cancelGestures()
+        }
+        preCalibrationGestures = nil
+        synth.inputEnabled = true
+        setTracking(resumeAfterCalibration, announce: false)
+        updateServices()
+        if !sourceChanged { autoStartIfReady() }
+    }
+
+    func undoCalibration() {
+        guard !calibration.isActive, let backup = settings.calibrationBackup else { return }
+        var updated = settings
+        updated.pointer = backup.pointer; updated.gestures = backup.gestures
+        updated.calibrationProfile = backup.profile; updated.calibrationBackup = nil
+        settings = updated
+    }
+
     // MARK: Nod calibration
 
     /// While active, smaller nods are accepted and their depths recorded.
@@ -374,11 +450,13 @@ final class AppController: ObservableObject {
 
     private var motionNeeded: Bool {
         guard motionAuthorization != .denied, motionAuthorization != .restricted else { return false }
+        if calibration.isActive { return true }
         if trackingEnabled { return true }
         return motionRequested && settings.hasCompletedOnboarding && settings.actions.headGestureCanToggleTracking
     }
 
     private var stemNeeded: Bool {
+        if calibration.isActive { return false }
         guard settings.stemControlsEnabled else { return false }
         return trackingEnabled || (settings.hasCompletedOnboarding && settings.actions.stemCanToggleTracking)
     }
@@ -423,6 +501,7 @@ final class AppController: ObservableObject {
     }
 
     private func applySettings() {
+        if !settings.developerModeEnabled, calibration.isActive { finishCalibration() }
         control.pointerSettings = settings.pointer
         control.suspend()
         smoother.reset()
@@ -555,7 +634,7 @@ final class AppController: ObservableObject {
     /// Dock and ⌘-Tab so the window can't get lost behind other apps.
     func windowVisibilityChanged() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            let titles: Set<String> = ["AirCursor", "Welcome to AirCursor"]
+            let titles: Set<String> = ["AirCursor", "Welcome to AirCursor", "Motion calibration"]
             let anyOpen = NSApp.windows.contains { $0.isVisible && titles.contains($0.title) }
             let policy: NSApplication.ActivationPolicy = anyOpen ? .regular : .accessory
             if NSApp.activationPolicy() != policy {
@@ -576,6 +655,7 @@ final class AppController: ObservableObject {
             toast("AirPods head tracking connected", symbol: "airpodspro")
         } else {
             motionStreaming = false
+            calibration.connectionInterrupted()
             control.suspend()
             motionUpdate = nil
             tiltAnchor = nil
@@ -609,6 +689,11 @@ final class AppController: ObservableObject {
         let hostNow = Self.now
         lastSampleHostTime = hostNow
         sampleCount += 1
+        if calibration.isActive {
+            if !motionStreaming { motionStreaming = true }
+            calibration.push(sample, hostTime: hostNow)
+            return // calibration/preview must never synthesize desktop input
+        }
         if sample.isFinite {
             motionTrace.append(sample)
             if motionTrace.count > 250 { motionTrace.removeFirst(motionTrace.count - 250) }
@@ -664,7 +749,7 @@ final class AppController: ObservableObject {
                 yaw: AngleMath.degrees(sample.yaw), pitch: AngleMath.degrees(sample.pitch),
                 roll: AngleMath.degrees(sample.roll),
                 yawRate: update.rates?.yaw ?? 0, pitchRate: update.rates?.pitch ?? 0,
-                inputState: status, acceleration: sample.userAcceleration?.length,
+                inputState: status, acceleration: sample.userAcceleration?.length, accelerationVector: sample.userAcceleration,
                 rawYawRate: update.rawRates?.yaw ?? 0, rawPitchRate: update.rawRates?.pitch ?? 0,
                 relativeRoll: control.gestures.relativeRoll(AngleMath.degrees(sample.roll))
             )
@@ -673,6 +758,7 @@ final class AppController: ObservableObject {
 
     /// Runs at 120 Hz while tracking: integrates smoothed velocity into cursor movement.
     private func frame() {
+        guard trackingEnabled, !calibration.isActive else { return }
         let now = Self.now
         let dt = min(max(now - (lastFrame ?? now), 0), 0.05)
         lastFrame = now
@@ -776,6 +862,7 @@ final class AppController: ObservableObject {
     }
 
     private func post(_ point: CGPoint) {
+        guard !calibration.isActive else { return }
         synth.move(to: point)
         lastPosted.append(point)
         if lastPosted.count > 3 { lastPosted.removeFirst(lastPosted.count - 3) }
@@ -784,6 +871,7 @@ final class AppController: ObservableObject {
     // MARK: Triggers → actions
 
     private func handle(trigger: Trigger, gestureStart: TimeInterval?) {
+        guard !calibration.isActive else { return }
         let action = settings.actions[trigger]
         guard action != .none else { return }
         if trigger.headGesture != nil || trigger == .dwell {
@@ -816,6 +904,7 @@ final class AppController: ObservableObject {
     }
 
     private func perform(_ action: PointerAction, at point: CGPoint) {
+        guard !calibration.isActive else { return }
         switch action {
         case .none:
             return
@@ -918,6 +1007,7 @@ final class AppController: ObservableObject {
     }
 
     var statusText: String {
+        if calibration.isActive { return "Calibrating — head control paused" }
         if !accessibilityTrusted { return "Needs Accessibility permission" }
         if motionAuthorization == .denied { return "Motion access denied" }
         if !trackingEnabled { return "Paused" }

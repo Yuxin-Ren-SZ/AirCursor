@@ -132,6 +132,11 @@ MPRemoteCommandCenter          stem presses (play/pause, next, previous) → tri
 
 See [motion processing and tuning](docs/motion-control.md) for filter parameters, the acceleration gate, and the future sensor boundary. The pointer and gesture core (`Sources/AirCursorCore`) is plain Swift with unit tests. See [CONTRIBUTING.md](CONTRIBUTING.md) for a tour of the code.
 
+For personal tuning, enable **Developer mode** under **Settings → Shortcuts & General**.
+The [guided calibration](docs/calibration.md) records slow/fast pointing, small comfortable
+click tilts and posture adjustments, then lets you try the suggestions in a virtual pointer
+preview. Apply saves a personal profile; Undo restores the previous settings.
+
 ## Contributing
 
 Issues and PRs are welcome, especially gesture tuning across AirPods models. Please attach the Diagnostics output to bug reports. PRs get an automated review against the project's rulebook, and merged app changes are released automatically. See [CONTRIBUTING.md](CONTRIBUTING.md).

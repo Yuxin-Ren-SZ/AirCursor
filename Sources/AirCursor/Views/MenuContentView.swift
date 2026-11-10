@@ -52,6 +52,9 @@ struct MenuContentView: View {
             }
 
             Toggle("Hover click (rest the pointer to click)", isOn: $controller.settings.dwell.enabled)
+            if controller.settings.developerModeEnabled {
+                Button("Motion calibration…") { controller.showCalibration() }
+            }
 
             if let last = controller.lastTriggerDescription {
                 Text("Last: \(last)").font(.caption).foregroundStyle(.secondary).lineLimit(1)

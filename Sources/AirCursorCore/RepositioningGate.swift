@@ -1,5 +1,19 @@
 import Foundation
 
+/// Shared by live control and calibration so learned thresholds use the same signal.
+public struct RepositioningSignal: Sendable {
+    private var rotationEnvelope = 0.0
+    private var energy = 0.0
+    public init() {}
+    public mutating func update(magnitude: Double, angularSpeed: Double, dt: Double) -> (residual: Double, rms: Double) {
+        rotationEnvelope = max(bounded(angularSpeed, 0, 0, 720), rotationEnvelope * exp(-max(dt, 0) / 0.12))
+        let residual = max(0, magnitude - min(0.09, rotationEnvelope * 0.09 / 60))
+        let alpha = 1 - exp(-min(max(dt, 0.001), 0.25) / 0.08)
+        energy += (residual*residual - energy) * alpha
+        return (residual, sqrt(max(0, energy)))
+    }
+}
+
 public enum InputGateState: String, Sendable {
     case normal, cautious, frozen
     public var allowsClicks: Bool { self == .normal }
@@ -13,10 +27,9 @@ public struct RepositioningGate: Sendable {
     public private(set) var accelerationAvailable = false
     private var lastTime: TimeInterval?
     private var lastAcceleration: Vec3?
-    private var energy = 0.0
+    private var signal = RepositioningSignal()
     private var strongSince: TimeInterval?
     private var quietSince: TimeInterval?
-    private var rotationEnvelope = 0.0
 
     public init() {}
     public mutating func reset() { self = Self() }
@@ -41,12 +54,8 @@ public struct RepositioningGate: Sendable {
         // An earbud accelerates during rotation about the neck. A bounded allowance
         // prevents brief ordinary turns/tilts from canceling their own click. It is
         // a heuristic, not translation compensation; strong raw acceleration still freezes.
-        rotationEnvelope = max(bounded(angularSpeed, 0, 0, 720), rotationEnvelope * exp(-max(dt, 0) / 0.12))
-        let rotationAllowance = min(0.09, rotationEnvelope * 0.09 / 60)
-        let residualMagnitude = max(0, magnitude - rotationAllowance)
-        let alpha = 1 - exp(-min(max(dt, 0.001), 0.25) / 0.08)
-        energy += (residualMagnitude*residualMagnitude - energy) * alpha
-        let rms = sqrt(max(energy, 0))
+        let features = signal.update(magnitude: magnitude, angularSpeed: angularSpeed, dt: dt)
+        let residualMagnitude = features.residual, rms = features.rms
         let caution = bounded(settings.cautionAcceleration, 0.045, 0.01, 0.5)
         let strong = max(caution * 1.5, bounded(settings.freezeAcceleration, 0.18, 0.03, 1))
         let jerk: Double
