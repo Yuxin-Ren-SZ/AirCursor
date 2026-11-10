@@ -350,9 +350,9 @@ struct PointerSettingsView: View {
 
             if controller.settings.pointer.filterMode == .kalman {
                 Section("Precision and travel") {
-                    LabeledSlider(title: "Precision gain", value: $controller.settings.pointer.precisionGain, range: 4...40,
+                    LabeledSlider(title: "Precision gain", value: $controller.settings.pointer.precisionGain, range: 4...60,
                                   format: { String(format: "%.0f points/°", $0) })
-                    LabeledSlider(title: "Travel gain", value: $controller.settings.pointer.travelGain, range: 20...120,
+                    LabeledSlider(title: "Travel gain", value: $controller.settings.pointer.travelGain, range: 4...120,
                                   format: { String(format: "%.0f points/°", $0) })
                     LabeledSlider(title: "Speed transition", value: $controller.settings.pointer.transitionSpeed, range: 0.5...80,
                                   format: { String(format: "%.0f°/s", $0) })
@@ -376,6 +376,8 @@ struct PointerSettingsView: View {
                               format: { String(format: "%.3f g", $0) })
                 LabeledSlider(title: "Pause above", value: $controller.settings.pointer.repositioning.freezeAcceleration, range: 0.1...0.6,
                               format: { String(format: "%.2f g", $0) })
+                LabeledSlider(title: "Quiet recovery", value: $controller.settings.pointer.repositioning.settleTime, range: 0.06...0.3,
+                              format: { String(format: "%.0f ms", $0 * 1000) })
                 Text("Possible posture adjustments slow movement and pause head clicks. Strong, sustained movement pauses the pointer until you settle. Acceleration is a hint, not a measurement of your position.")
                     .font(.caption).foregroundStyle(.secondary)
             }

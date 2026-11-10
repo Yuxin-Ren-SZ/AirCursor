@@ -27,7 +27,8 @@ public enum CalibrationPhase: String, CaseIterable, Codable, Identifiable, Senda
         switch self {
         case .neutral: 4
         case .slowPointing, .leftTilt, .rightTilt: 10
-        case .fastPointing, .repositioning: 8
+        case .fastPointing: 8
+        case .repositioning: 12
         }
     }
 }
@@ -96,6 +97,37 @@ public struct CalibrationProfile: Codable, Equatable, Sendable {
     public var repositioningLearned: Bool
     public var postureAccelerationRMS: Vec3
     public var notes: [String]
+    public var algorithmVersion: Int = 2
+    public var display: CalibrationDisplay?
+    public var ordinaryResidualUpperBound: Double?
+    public var ordinaryRawUpperBound: Double?
+    public var refinementCount: Int = 0
+    public var refinements: [CalibrationRefinement] = []
+}
+
+extension CalibrationProfile {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        date = try c.decode(Date.self, forKey: .date)
+        sourceID = try c.decode(String.self, forKey: .sourceID)
+        sampleCount = try c.decode(Int.self, forKey: .sampleCount)
+        slowSpeed = try c.decode(Double.self, forKey: .slowSpeed)
+        fastSpeed = try c.decode(Double.self, forKey: .fastSpeed)
+        precisionMaximumSpeed = try c.decode(Double.self, forKey: .precisionMaximumSpeed)
+        travelMinimumSpeed = try c.decode(Double.self, forKey: .travelMinimumSpeed)
+        leftTiltPeak = try c.decode(Double.self, forKey: .leftTiltPeak)
+        rightTiltPeak = try c.decode(Double.self, forKey: .rightTiltPeak)
+        minimumTiltAngle = try c.decode(Double.self, forKey: .minimumTiltAngle)
+        repositioningLearned = try c.decode(Bool.self, forKey: .repositioningLearned)
+        postureAccelerationRMS = try c.decode(Vec3.self, forKey: .postureAccelerationRMS)
+        notes = c.value(.notes, default: [])
+        algorithmVersion = c.value(.algorithmVersion, default: 1)
+        display = c.value(.display, default: nil)
+        ordinaryResidualUpperBound = c.value(.ordinaryResidualUpperBound, default: nil)
+        ordinaryRawUpperBound = c.value(.ordinaryRawUpperBound, default: nil)
+        refinementCount = c.value(.refinementCount, default: 0)
+        refinements = c.value(.refinements, default: [])
+    }
 }
 
 public struct CalibrationBackup: Codable, Equatable, Sendable {
@@ -119,9 +151,18 @@ public struct CalibrationReport: Sendable {
     public var profile: CalibrationProfile
     /// Session reference only; not persisted across sensor reconnects.
     public var neutralRoll: Double
+    public init(pointer: PointerSettings, gestures: GestureSettings, profile: CalibrationProfile, neutralRoll: Double) {
+        self.pointer = pointer; self.gestures = gestures; self.profile = profile; self.neutralRoll = neutralRoll
+    }
 }
 
 public struct CalibrationAnalysis: Sendable {
     public var report: CalibrationReport?
     public var issues: [CalibrationIssue]
+}
+
+public struct CalibrationStepFeedback: Sendable {
+    public var title: String
+    public var detail: String
+    public var needsRepeat: Bool
 }

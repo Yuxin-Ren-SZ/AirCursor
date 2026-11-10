@@ -2,6 +2,46 @@ import XCTest
 @testable import AirCursorCore
 
 final class TrackingTests: XCTestCase {
+    func testBriefAccelerationAndJerkDoNotSuppressOrdinaryPointing() {
+        var gate = RepositioningGate()
+        for i in 0..<60 {
+            // 80 ms bursts, including abrupt starts/stops, separated by quiet input.
+            let acceleration = [10,11,30,31].contains(i) ? 0.20 : 0
+            XCTAssertEqual(gate.update(time: Double(i)*0.04, acceleration: Vec3(acceleration,0,0),
+                                       reliable: true, settings: RepositioningSettings()), .normal)
+        }
+    }
+
+    func testSensorRecoveryKeepsLongerQuietGuardThanPostureRecovery() {
+        var gate = RepositioningGate()
+        gate.freeze(reason: .invalidSignal)
+        for i in 0...4 {
+            XCTAssertEqual(gate.update(time: Double(i)*0.04, acceleration: Vec3(0,0,0), reliable: true,
+                                       settings: RepositioningSettings()), .frozen)
+        }
+        XCTAssertEqual(gate.update(time: 0.20, acceleration: Vec3(0,0,0), reliable: true,
+                                   settings: RepositioningSettings()), .normal)
+    }
+
+    func testPostureRecoveryResumesPointingOffNeutralWithoutDelayedClick() {
+        var pipeline = HeadControlPipeline()
+        var resumed = false
+        for i in 0..<70 {
+            let roll = i < 10 ? 0 : min(24, Double(i-9)*3)
+            let acceleration = (13...24).contains(i) ? 0.8 : 0.0
+            let yaw = i < 28 ? 0 : Double(i-28)
+            let update = pipeline.process(sample(Double(i)*0.04, yaw: yaw, roll: roll, acceleration: acceleration), enabled: [.tiltRight])
+            XCTAssertNil(update.gesture)
+            if i > 40 {
+                XCTAssertEqual(update.gate, .normal)
+                XCTAssertFalse(update.holdingPointer)
+                XCTAssertFalse(update.allowsAutomaticClicks) // clicks still await upright return
+                resumed = resumed || update.targetVelocity.length > 0
+            }
+        }
+        XCTAssertTrue(resumed)
+    }
+
     private func sample(_ t: Double, yaw: Double = 0, pitch: Double = 0, roll: Double = 0,
                         acceleration: Double? = 0) -> MotionSample {
         MotionSample(timestamp: t, yaw: AngleMath.radians(yaw), pitch: AngleMath.radians(pitch),
@@ -94,17 +134,23 @@ final class TrackingTests: XCTestCase {
         var gate = RepositioningGate()
         let settings = RepositioningSettings()
         XCTAssertEqual(gate.update(time: 0, acceleration: Vec3(0,0,0), reliable: true, settings: settings), .normal)
-        XCTAssertEqual(gate.update(time: 0.04, acceleration: Vec3(0.08,0,0), reliable: true, settings: settings), .cautious)
-        for i in 2...10 {
+        XCTAssertEqual(gate.update(time: 0.04, acceleration: Vec3(0.08,0,0), reliable: true, settings: settings), .normal)
+        for i in 2...8 {
+            _ = gate.update(time: Double(i)*0.04, acceleration: Vec3(0.08,0,0), reliable: true, settings: settings)
+        }
+        XCTAssertEqual(gate.state, .cautious)
+        XCTAssertEqual(gate.reason, .posture)
+        for i in 9...20 {
             _ = gate.update(time: Double(i)*0.04, acceleration: Vec3(0.25,0,0), reliable: true, settings: settings)
         }
         XCTAssertEqual(gate.state, .frozen)
-        _ = gate.update(time: 0.44, acceleration: Vec3(0,0,0), reliable: true, settings: settings)
+        _ = gate.update(time: 0.84, acceleration: Vec3(0,0,0), reliable: true, settings: settings)
         XCTAssertEqual(gate.state, .frozen)
-        for i in 12...45 {
+        for i in 22...24 {
             _ = gate.update(time: Double(i)*0.04, acceleration: Vec3(0,0,0), reliable: true, settings: settings)
         }
         XCTAssertEqual(gate.state, .normal)
+        XCTAssertEqual(gate.reason, .none)
     }
 
     func testSmallHeadAccelerationDoesNotFreezeAndMissingAccelerationIsSupported() {
@@ -132,7 +178,8 @@ final class TrackingTests: XCTestCase {
         XCTAssertEqual(diagonal.x / diagonal.y, 12.0/9.0, accuracy: 1e-8)
         let slow = response.velocity(rates: AngularRates(timestamp: 0, yaw: 2, pitch: 0, roll: 0), settings: settings)
         let fast = response.velocity(rates: AngularRates(timestamp: 0, yaw: 60, pitch: 0, roll: 0), settings: settings)
-        XCTAssertGreaterThan(abs(fast.x)/60, abs(slow.x)/2 * 3)
+        XCTAssertGreaterThan(abs(fast.x)/60, abs(slow.x)/2 * 2)
+        XCTAssertLessThan(abs(fast.x)/60, abs(slow.x)/2 * 3)
     }
 
     func testRadialDeadzoneHysteresisAndZeroDeadzone() {
@@ -178,7 +225,7 @@ final class TrackingTests: XCTestCase {
         var events: [HeadGesture] = []
         for i in 0..<100 {
             let roll: Double = i < 5 ? 0 : i < 13 ? Double(i-5)*3 : i < 65 ? 24 : 0
-            let accel = i >= 9 && i < 20 ? 0.09 : 0.0
+            let accel = i >= 9 && i < 24 ? 0.4 : 0.0
             let update = pipeline.process(sample(Double(i)*0.04, roll: roll, acceleration: accel), enabled: [.tiltRight])
             if let event = update.gesture { events.append(event.gesture) }
             if update.gate != .normal { XCTAssertNil(update.gesture); XCTAssertFalse(update.allowsAutomaticClicks) }
@@ -191,6 +238,7 @@ final class TrackingTests: XCTestCase {
         for i in 0..<20 { _ = pipeline.process(sample(Double(i)*0.04, yaw: Double(i)), enabled: []) }
         var update = pipeline.process(sample(2, yaw: 80), enabled: [])
         XCTAssertEqual(update.gate, .frozen)
+        XCTAssertEqual(update.gateReason, .sampleGap)
         XCTAssertEqual(update.targetVelocity, .zero)
         for i in 1..<30 { update = pipeline.process(sample(2 + Double(i)*0.04, yaw: 80), enabled: []) }
         XCTAssertEqual(update.gate, .normal)
@@ -240,7 +288,7 @@ final class TrackingTests: XCTestCase {
         XCTAssertFalse(migrated.dwell.enabled)
         XCTAssertEqual(migrated.pointer.deadzone, fresh.pointer.deadzone)
         XCTAssertEqual(migrated.pointer.sensitivity, 2)
-        XCTAssertEqual(migrated.version, 4)
+        XCTAssertEqual(migrated.version, AppSettings.currentVersion)
         XCTAssertEqual(migrated.migrated(), migrated)
     }
 
@@ -270,7 +318,7 @@ final class TrackingTests: XCTestCase {
         XCTAssertEqual(settings.pointer.filter.measurementNoise, 0.2)
         XCTAssertEqual(settings.pointer.filter.processAcceleration, 100)
         XCTAssertFalse(settings.pointer.repositioning.enabled)
-        XCTAssertEqual(settings.pointer.repositioning.settleTime, 0.25)
+        XCTAssertEqual(settings.pointer.repositioning.settleTime, 0.10)
         XCTAssertEqual(try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings)), settings)
     }
 

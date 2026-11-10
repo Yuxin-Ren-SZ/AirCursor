@@ -20,10 +20,12 @@ public struct KalmanSettings: Codable, Equatable, Sendable {
 
 public struct RepositioningSettings: Codable, Equatable, Sendable {
     public var enabled = true
-    public var cautionAcceleration: Double = 0.045 // g
-    public var freezeAcceleration: Double = 0.18 // g, sustained for 120 ms
-    public var cautiousGain: Double = 0.35
-    public var settleTime: Double = 0.25
+    public var cautionAcceleration: Double = 0.06 // g, sustained residual + RMS evidence
+    public var freezeAcceleration: Double = 0.24 // g
+    public var cautiousGain: Double = 0.6
+    public var settleTime: Double = 0.10
+    public var cautionDuration: Double = 0.16
+    public var freezeDuration: Double = 0.20
     public init() {}
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self), d = Self()
@@ -32,6 +34,8 @@ public struct RepositioningSettings: Codable, Equatable, Sendable {
         freezeAcceleration = c.value(.freezeAcceleration, default: d.freezeAcceleration)
         cautiousGain = c.value(.cautiousGain, default: d.cautiousGain)
         settleTime = c.value(.settleTime, default: d.settleTime)
+        cautionDuration = c.value(.cautionDuration, default: d.cautionDuration)
+        freezeDuration = c.value(.freezeDuration, default: d.freezeDuration)
     }
 }
 

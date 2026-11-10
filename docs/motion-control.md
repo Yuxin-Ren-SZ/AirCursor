@@ -4,6 +4,8 @@ The default controls are yaw/pitch pointing and roll tilts for left/right clicks
 Hover and nod clicks are off by default; stem controls and shake-to-pause remain.
 Version 4 migrates the old stock action bindings to tilt clicks, retaining customized
 bindings and non-default tuning. Settings decode missing or mistyped fields leniently.
+Version 5 rebalances the original automatic calibration fit, preserves edited
+gains, adds conservative posture thresholds and shortens posture recovery.
 
 ## Signal acquisition and estimation
 
@@ -61,19 +63,21 @@ also accelerate the earbuds. Kalman covariance is not an intent probability.
 | State | Entry / behavior |
 | --- | --- |
 | Normal | Full movement and configured gestures |
-| Cautious | Residual acceleration magnitude or smoothed RMS ≥0.045 g; movement gain ×0.35, head gestures and hover clicks canceled |
-| Frozen | Acceleration ≥0.18 g for 120 ms, or a ≥0.65 g impact; zero motion output, cancel gestures and release drag |
+| Cautious | Residual ≥80% of 0.06 g and RMS ≥0.06 g, sustained for 160 ms; movement gain ×0.6, head gestures and hover clicks canceled |
+| Frozen | Raw acceleration ≥0.24 g with residual/RMS evidence for 200 ms, or an impact ≥max(0.65 g, 3 × freeze threshold); zero motion output, cancel gestures and release drag |
 | Invalid signal | Nonfinite data, out-of-order timestamps, gaps or rejected attitude also freeze output |
-| Recovery | Raw acceleration <60% of caution threshold and RMS <80%, then quiet for 250 ms |
+| Posture recovery | Fresh residual <60% of caution threshold, quiet for 100 ms by default (calibration: 60–120 ms) |
+| Signal recovery | Residual <60% and RMS <80% of caution threshold, quiet for at least 180 ms |
 
 Ordinary rotation receives a bounded acceleration allowance (up to 0.09 g at 60°/s).
 Its angular-speed envelope decays over 120 ms to include braking. This helps avoid
 canceling a tilt click because of the tilt's own acceleration. It can also miss body
 movement concurrent with rotation; it is not an estimate of translational acceleration.
-Strong-movement and impact checks use the original acceleration without this allowance.
+Strong-movement checks require original acceleration plus residual evidence;
+impact checks use the original acceleration directly.
 Residual acceleration energy uses exponential smoothing with an 80 ms time constant.
-Jerk above 4 g/s also enters caution when acceleration exceeds 80% of the caution
-threshold. The effective freeze threshold is at least 1.5 times the caution
+Jerk alone no longer enters caution. Brief starts/braking must pass a sustained
+evidence dwell. The effective freeze threshold is at least twice the caution
 threshold. The immediate impact threshold is at least three times the freeze
 threshold. Missing acceleration allows attitude-only operation and is visible in
 Diagnostics. Invalid observations still freeze input when posture suppression is off.
@@ -82,6 +86,8 @@ The estimator continues updating during suppression. There is no accumulated
 movement to replay. Tilt candidates are canceled, requiring neutral before a new
 click. Manual stem actions and hotkeys remain available. A 120 ms delivery timeout
 clears motion output, cancels pending clicks and releases drag.
+After posture recovery, pointing can resume even if roll has shifted. Tilt and
+hover clicks require the upright return, preventing a delayed click.
 
 ## Pointing and clicking
 
@@ -89,8 +95,8 @@ clears motion output, cancels pending clicks and releases drag.
 | --- | --- |
 | Radial dead zone | 1.2°/s; may rise to at most twice the configured value from resting noise |
 | Hysteresis | Activate above full threshold, deactivate below 65% |
-| Precision gain | 14 screen points/degree |
-| Travel gain | 56 screen points/degree at default acceleration 0.6 |
+| Precision gain | 18 screen points/degree |
+| Travel gain | 48 screen points/degree at default acceleration 0.6 |
 | Gain transition | Smoothstep from 5°/s to 40°/s after the soft dead zone |
 | Extra smoothing | 0.18 retention per 1/60 s, corrected for actual frame duration |
 | Output timer / maximum frame interval | 120 Hz / 50 ms |

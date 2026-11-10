@@ -2,6 +2,130 @@ import XCTest
 @testable import AirCursorCore
 
 final class CalibrationTests: XCTestCase {
+    func testStepFeedbackAcceptsCompleteGuideAndExplainsWeakCaptures() {
+        let data = session()
+        for phase in CalibrationPhase.allCases {
+            guard let captured = data[phase] else { continue }
+            let feedback = CalibrationAnalyzer.stepFeedback(captured, recordings: data, baseline: AppSettings())
+            XCTAssertFalse(feedback.needsRepeat, feedback.detail)
+            XCTAssertFalse(feedback.detail.isEmpty)
+        }
+        var neutral = recording(.neutral)
+        neutral.samples = neutral.samples.map { sample in
+            var sample = sample; sample.userAcceleration = Vec3(0.12,0,0); return sample
+        }
+        XCTAssertTrue(CalibrationAnalyzer.stepFeedback(neutral, recordings: data, baseline: AppSettings()).needsRepeat)
+        var weak = recording(.neutral); weak.phase = .slowPointing; weak.elapsed = 10
+        XCTAssertTrue(CalibrationAnalyzer.stepFeedback(weak, recordings: data, baseline: AppSettings()).needsRepeat)
+        var same = recording(.slowPointing); same.phase = .fastPointing
+        XCTAssertTrue(CalibrationAnalyzer.stepFeedback(same, recordings: data, baseline: AppSettings()).needsRepeat)
+        let opposite = recording(.rightTilt, oppositeRoll: true)
+        XCTAssertTrue(CalibrationAnalyzer.stepFeedback(opposite, recordings: data, baseline: AppSettings()).needsRepeat)
+    }
+
+    func testFeedbackImprovesFineMovementAndReducesFastTravelIndependently() {
+        guard let original = CalibrationAnalyzer.analyze(session(), baseline: AppSettings()).report else { return XCTFail("Missing report") }
+        var feedback = CalibrationFeedback(); feedback.slow = .tooLittle; feedback.fast = .tooMuch
+        let updated = CalibrationRefiner.refine(original, feedback: feedback, metrics: CalibrationTrialMetrics())
+        XCTAssertEqual(updated.pointer.precisionGain, original.pointer.precisionGain * 1.25, accuracy: 0.001)
+        XCTAssertEqual(updated.pointer.travelGain, max(updated.pointer.precisionGain, original.pointer.travelGain * 0.8), accuracy: 0.001)
+        XCTAssertEqual(updated.pointer.filter, original.pointer.filter)
+        XCTAssertEqual(updated.gestures, original.gestures)
+        XCTAssertEqual(updated.profile.refinementCount, 1)
+        XCTAssertEqual(updated.profile.refinements.last?.before, original.pointer)
+        XCTAssertEqual(updated.profile.refinements.last?.after, updated.pointer)
+    }
+
+    func testFalsePauseFeedbackAddsMarginsWithoutDisablingSensorGuards() {
+        guard let original = CalibrationAnalyzer.analyze(session(), baseline: AppSettings()).report else { return XCTFail("Missing report") }
+        var feedback = CalibrationFeedback(); feedback.posture = .falsePauses
+        let updated = CalibrationRefiner.refine(original, feedback: feedback, metrics: CalibrationTrialMetrics())
+        XCTAssertTrue(updated.pointer.repositioning.enabled)
+        XCTAssertGreaterThan(updated.pointer.repositioning.cautionAcceleration, original.pointer.repositioning.cautionAcceleration)
+        XCTAssertGreaterThan(updated.pointer.repositioning.freezeDuration, original.pointer.repositioning.freezeDuration)
+        XCTAssertGreaterThan(updated.pointer.repositioning.cautiousGain, original.pointer.repositioning.cautiousGain)
+        XCTAssertLessThanOrEqual(updated.pointer.repositioning.settleTime, original.pointer.repositioning.settleTime)
+        var pipeline = HeadControlPipeline(pointer: updated.pointer)
+        let invalid = pipeline.process(MotionSample(timestamp: 0, yaw: .nan, pitch: 0, roll: 0), enabled: [.tiltLeft])
+        XCTAssertEqual(invalid.gate, .frozen)
+        XCTAssertEqual(invalid.targetVelocity, .zero)
+    }
+
+    func testRepeatedFeedbackStaysBoundedAndKeepsOnlyRecentDerivedHistory() throws {
+        guard var report = CalibrationAnalyzer.analyze(session(), baseline: AppSettings()).report else { return XCTFail("Missing report") }
+        var feedback = CalibrationFeedback()
+        feedback.slow = .tooLittle; feedback.fast = .tooMuch; feedback.posture = .falsePauses
+        feedback.leftClick = .tooHard; feedback.rightClick = .accidental
+        for _ in 0..<50 { report = CalibrationRefiner.refine(report, feedback: feedback, metrics: CalibrationTrialMetrics()) }
+        XCTAssertLessThanOrEqual(report.pointer.precisionGain, 60)
+        XCTAssertGreaterThanOrEqual(report.pointer.travelGain, report.pointer.precisionGain)
+        XCTAssertLessThanOrEqual(report.pointer.repositioning.cautionAcceleration, 0.3)
+        XCTAssertLessThanOrEqual(report.pointer.repositioning.freezeAcceleration, 0.9)
+        XCTAssertGreaterThanOrEqual(report.pointer.repositioning.settleTime, 0.06)
+        XCTAssertGreaterThanOrEqual(report.gestures.angle(for: .tiltLeft), report.profile.minimumTiltAngle)
+        XCTAssertLessThanOrEqual(report.gestures.angle(for: .tiltRight), 30)
+        XCTAssertEqual(report.profile.refinements.count, 20)
+        XCTAssertEqual(report.profile.refinementCount, 50)
+        XCTAssertEqual(report.profile.refinements.last?.afterGestures, report.gestures)
+        let encoded = try JSONEncoder().encode(report.profile)
+        XCTAssertEqual(try JSONDecoder().decode(CalibrationProfile.self, from: encoded), report.profile)
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("samples"))
+    }
+
+    func testTrialSeparatesPostureSuppressionFromInvalidSensorTime() {
+        var metrics = CalibrationTrialMetrics()
+        metrics.observe(dt: 0.04, gate: .normal, reason: .none)
+        metrics.observe(dt: 0.04, gate: .cautious, reason: .posture)
+        metrics.observe(dt: 0.04, gate: .frozen, reason: .stale)
+        metrics.observe(dt: 2, gate: .frozen, reason: .stale)
+        XCTAssertEqual(metrics.duration, 0.12, accuracy: 0.001)
+        XCTAssertEqual(metrics.posturePaused, 0.04, accuracy: 0.001)
+        XCTAssertEqual(metrics.signalPaused, 0.04, accuracy: 0.001)
+    }
+
+    func testLegacyProfileMigrationRebalancesOnlyUneditedAutomaticGainsOnce() throws {
+        guard let report = CalibrationAnalyzer.analyze(session(), baseline: AppSettings()).report else { return XCTFail("Missing report") }
+        var old = AppSettings(); old.version = 4; old.calibrationProfile = report.profile
+        old.calibrationProfile?.algorithmVersion = 1
+        old.pointer.deadzone = report.pointer.deadzone
+        old.pointer.precisionGain = min(40, max(4, 70 / max(1, report.profile.slowSpeed - old.pointer.deadzone * 0.65)))
+        old.pointer.travelGain = 56; old.pointer.sensitivity = 1.7; old.pointer.invertHorizontal = true
+        old.pointer.repositioning.cautionAcceleration = 0.029
+        old.pointer.repositioning.settleTime = 0.36
+        // Simulate a v4 profile that predates the added summary fields.
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as! [String: Any]
+        var profile = json["calibrationProfile"] as! [String: Any]
+        for key in ["algorithmVersion", "display", "ordinaryResidualUpperBound", "ordinaryRawUpperBound", "refinementCount", "refinements"] { profile.removeValue(forKey: key) }
+        json["calibrationProfile"] = profile
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNotNil(decoded.calibrationProfile)
+        XCTAssertEqual(decoded.calibrationProfile?.algorithmVersion, 1)
+        let updated = decoded.migrated()
+        XCTAssertGreaterThan(updated.pointer.precisionGain, old.pointer.precisionGain)
+        XCTAssertEqual(updated.pointer.travelGain, 42)
+        XCTAssertEqual(updated.pointer.sensitivity, 1.7)
+        XCTAssertTrue(updated.pointer.invertHorizontal)
+        XCTAssertEqual(updated.pointer.repositioning.cautionAcceleration, 0.06)
+        XCTAssertEqual(updated.pointer.repositioning.settleTime, 0.12)
+        XCTAssertEqual(updated.migrated(), updated)
+        old.pointer.precisionGain = 23; old.pointer.travelGain = 77
+        let custom = old.migrated()
+        XCTAssertEqual(custom.pointer.precisionGain, 23)
+        XCTAssertEqual(custom.pointer.travelGain, 77)
+    }
+
+    func testFittedTravelUsesLogicalDisplayWidth() {
+        let small = CalibrationAnalyzer.analyze(session(), baseline: AppSettings(), screenWidth: 1440).report
+        let large = CalibrationAnalyzer.analyze(session(), baseline: AppSettings(), screenWidth: 2880).report
+        XCTAssertNotNil(small); XCTAssertNotNil(large)
+        XCTAssertEqual(large?.pointer.precisionGain, small?.pointer.precisionGain)
+        XCTAssertGreaterThan(large?.pointer.travelGain ?? 0, small?.pointer.travelGain ?? 0)
+        if let large {
+            let targetGain = 2880*0.6 / max(5, large.profile.fastSpeed-large.pointer.deadzone*0.65)
+            XCTAssertEqual(large.pointer.travelGain, min(120, max(16, large.pointer.precisionGain*1.25, targetGain)), accuracy: 0.001)
+        }
+    }
+
     private func recording(_ phase: CalibrationPhase, oppositeRoll: Bool = false,
                            acceleration: Bool = true, postureDistinct: Bool = true) -> CalibrationRecording {
         let index = CalibrationPhase.allCases.firstIndex(of: phase) ?? 0

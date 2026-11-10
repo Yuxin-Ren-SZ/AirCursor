@@ -16,11 +16,18 @@ It is opt-in; the ordinary onboarding tour and existing settings stay available.
 | Fast pointing | 8 s | Comfortable left/right and up/down turns for screen travel |
 | Left click | 10 s | Three small left tilts, each with a brief hold and upright return |
 | Right click | 10 s | Three small right tilts, each with a brief hold and upright return |
-| Posture | 8 s | Normal sideways, forward/back and up/down adjustments; pauses between movements |
+| Posture | 12 s | Normal sideways, forward/back and up/down adjustments; pauses between movements |
 
 Each capture has a two-second countdown. Start upright, especially for the tilt
 steps. A small comfortable motion is the input to calibration; users do not need
 to reach the old 18° threshold. There must be three completed tilts in each direction.
+
+Two animated dots represent the left and right ears. They demonstrate the turn
+pace, three held tilts with upright returns, stillness, and six posture shifts.
+Forward/back movement changes their size and spacing. During capture the animation
+follows valid sensor time, so it pauses with a sensor outage. Follow the pace using
+your own comfortable movement range. Each sample immediately reports what was
+measured and whether it should be repeated.
 
 The UI displays live yaw/pitch rates, roll, x/y/z acceleration and recent signal
 plots. Sensor outages pause capture time. Interrupted, physically implausible,
@@ -40,12 +47,19 @@ Normally, precision extends 20% beyond the slow 80th percentile; full travel gai
 begins 20% below the typical fast speed. When those bands overlap, narrower 10%
 buffers around the typical speeds are used with a smooth transition.
 
-The gain targets approximately 70 screen points/s at the typical slow movement
-and 80% of display width/s at the typical fast movement, within conservative gain
+The gain targets approximately 90 screen points/s at the typical slow movement
+and 60% of display width/s at the typical fast movement, within bounded gain
 bounds. These are starting heuristics, not measured optimal target-acquisition
 performance. The preview lets users inspect and adjust the gains. Calibration
 uses the Kalman curve, 1× sensitivity and the standard 0.6 acceleration multiplier;
 inversion, smoothing and action bindings are retained.
+
+The display under the cursor supplies its name, logical width/height, pixel size
+and scale. Gains use logical points, avoiding a doubled speed on Retina displays.
+**Use display under cursor** selects another monitor. Fine-control preview is 1:1
+inside a local 520 × 220-point area; whole-display travel uses a uniformly scaled,
+letterboxed preview of that monitor. Changing the display scales travel gain by
+the logical-width ratio, subject to the gain bounds; precision gain stays unchanged.
 
 Tilt calibration finds individual excursions from the recorded resting posture,
 requires complete returns, and rejects incomplete or extreme movements. The
@@ -74,9 +88,18 @@ clearly from that envelope before the guide changes these settings:
 
 - Caution threshold: between buffered ordinary movement and typical active posture movement.
 - Freeze threshold: above ordinary raw acceleration, informed by stronger posture movement;
-  at least 1.5 times the caution threshold.
-- Cautious movement gain: 0.15–0.5, according to the measured separation.
-- Quiet recovery time: observed acceleration settling plus an 80 ms margin, bounded to 160–600 ms.
+  at least twice the caution threshold and at least 0.18 g.
+- Cautious movement gain: 0.55–0.8, according to the measured separation.
+- Quiet recovery time: 30% of observed settling time, bounded to 60–120 ms.
+
+The ordinary-motion envelope uses the 99th percentile, with a 50% margin plus
+0.01 g and a minimum caution threshold of 0.06 g. Both current residual and
+smoothed energy must support a posture decision for a sustained interval; brief
+starts, braking or jerk alone no longer enter caution. Quiet posture recovery
+uses fresh residual acceleration without waiting for the old energy tail to decay.
+Invalid-signal stops retain a separate quiet guard of at least 180 ms. After a
+posture-canceled tilt, pointing may resume off neutral; tilt and hover clicks stay
+guarded until the upright return.
 
 With missing acceleration or overlapping samples, the existing posture settings
 are retained and the review explains why. The profile summarizes acceleration
@@ -84,6 +107,21 @@ RMS on all three axes for debugging. Rotations and translations remain imperfect
 separable from this sensor alone; repeat real tasks to check false suppression.
 
 ## Preview, persistence and safety
+
+After capture, try the targets and both clicks, then rate fine movement, fast
+travel, left/right click effort and posture detection. **Update and try again**
+creates another preview round and shows the changes immediately. **Undo last
+adjustment** restores the preceding round. Untried controls are left unrated.
+Near/far target entries, clicks, posture-suppression time and sensor interruption
+time provide direct feedback; they are observations, not accuracy scores.
+
+Fine gain changes by +25% or −20%, travel by +20% or −20%. Reports of false posture
+pauses increase acceleration thresholds and evidence duration, reduce slowdown,
+and shorten quiet recovery. Missed posture reports increase sensitivity within
+the recorded ordinary-motion margin. Click effort changes angle/hold per side,
+preserving the measured roll-noise margin. Bounded steps prevent runaway tuning.
+The advanced sliders remain available. Existing profiles also offer **Fine-tune
+saved controls without re-recording** from the welcome screen.
 
 During capture and preview, head-controlled pointer events, gestures, dwell clicks,
 scrolling and stem actions are inhibited, including a final guard in the event
@@ -94,7 +132,9 @@ The session's upright reference is used when normal control resumes, preventing 
 held tilt from becoming an immediate desktop click. That session reference is not
 persisted as a universal neutral pose across headphone reconnects.
 
-Applying saves only the pointer/gesture settings and a short dated profile. One
+Applying saves only the pointer/gesture settings and a dated profile, display
+metadata and up to 20 derived feedback rounds (ratings, aggregate preview metrics
+and parameter changes). No raw trajectories are saved. One
 previous settings/profile snapshot enables **Undo last calibration** in Developer.
 Canceling, closing the window, or disabling Developer mode discards recordings and
 restores the preceding tracking state. A changed sensor leaves tracking paused.
@@ -111,9 +151,10 @@ per-side tilt fields fall back to the existing shared controls when absent.
 components. `MotionCalibrationController` owns temporary UI/session state, while
 `AppController` owns input inhibition, apply and undo. The six-step flow can be
 reused in future onboarding without changing signal analysis or persistence.
-Learning is currently explicit per completed session, not passive inference from
+Learning is currently explicit through capture and feedback rounds, not passive inference from
 unlabeled everyday head movement.
 
 Run `swift test` with a complete Xcode installation. Tests cover the analyzer,
 per-side runtime gestures, bad captures, missing acceleration, posture overlap,
-profiles/undo serialization, countdown cancellation and source-change invalidation.
+profiles/undo serialization, feedback bounds and undo, display scaling, cue directions,
+short posture recovery, countdown cancellation and source-change invalidation.

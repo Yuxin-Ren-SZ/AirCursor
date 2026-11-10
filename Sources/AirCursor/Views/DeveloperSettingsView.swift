@@ -16,6 +16,10 @@ struct DeveloperSettingsView: View {
                     LabeledContent("Slow / fast speed", value: String(format: "%.1f / %.1f°/s", profile.slowSpeed, profile.fastSpeed))
                     LabeledContent("Natural left / right tilt", value: String(format: "%.1f / %.1f°", profile.leftTiltPeak, profile.rightTiltPeak))
                     LabeledContent("Posture learning", value: profile.repositioningLearned ? "Applied" : "Previous settings retained")
+                    LabeledContent("Feedback rounds", value: "\(profile.refinementCount)")
+                    if let display = profile.display {
+                        LabeledContent("Calibrated display", value: String(format: "%@ · %.0f × %.0f points", display.name, display.width, display.height))
+                    }
                     LabeledContent("Posture acceleration RMS", value: String(format: "x %.3f · y %.3f · z %.3f g",
                         profile.postureAccelerationRMS.x, profile.postureAccelerationRMS.y, profile.postureAccelerationRMS.z))
                     ForEach(profile.notes, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }

@@ -361,11 +361,14 @@ final class AppController: ObservableObject {
         NSApp.activate()
     }
 
-    func beginCalibration() {
+    func beginCalibration(tuneSaved: Bool = false) {
         guard settings.developerModeEnabled, !calibration.isActive else { return }
         resumeAfterCalibration = trackingEnabled
         preCalibrationGestures = control.gestures
-        calibration.begin()
+        let display = screens.calibrationDisplay(containing: synth.currentLocation())
+        if tuneSaved, settings.calibrationProfile != nil {
+            calibration.tuneCurrent(using: settings, display: display, neutralRoll: live.roll - live.relativeRoll)
+        } else { calibration.begin(using: settings, display: display) }
         setTracking(false, announce: false)
         releaseButtons()
         synth.inputEnabled = false
@@ -376,7 +379,13 @@ final class AppController: ObservableObject {
     }
 
     func reviewCalibration() {
-        calibration.analyze(using: settings, screenWidth: screens.display(containing: synth.currentLocation()).width)
+        updateCalibrationDisplay()
+        calibration.analyze(using: settings, screenWidth: calibration.display.width)
+    }
+
+    func updateCalibrationDisplay() {
+        screens.refresh()
+        calibration.setDisplay(screens.calibrationDisplay(containing: synth.currentLocation()))
     }
 
     func finishCalibration(apply: Bool = false) {
@@ -740,9 +749,10 @@ final class AppController: ObservableObject {
         if sample.isFinite, hostNow - lastLivePublish > 0.1 {
             lastLivePublish = hostNow
             let status: String
-            if update.gate == .frozen { status = "Motion paused — settling" }
+            if update.gate == .frozen { status = update.gateReason.message }
             else if update.gate == .cautious { status = "Repositioning — slower movement, clicks paused" }
             else if update.holdingPointer { status = "Tilt click — return to neutral to point" }
+            else if control.gestures.tiltWaitingForNeutral { status = "Pointing ready — return upright before tilt clicks" }
             else { status = "Ready" }
             live = LiveReadout(
                 hasData: true,

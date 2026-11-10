@@ -28,6 +28,13 @@ final class MotionCalibrationController: ObservableObject {
     @Published private(set) var previewRightClicks = 0
     @Published private(set) var previewGate: InputGateState = .normal
     @Published private(set) var readyToApply = false
+    @Published private(set) var stepFeedback: CalibrationStepFeedback?
+    @Published private(set) var display = CalibrationDisplay()
+    @Published private(set) var previewMode: CalibrationPreviewMode = .precision
+    @Published private(set) var trial = CalibrationTrialMetrics()
+    @Published private(set) var previewReason: InputGateReason = .none
+    @Published private(set) var feedbackChanges: [String] = []
+    @Published private(set) var canUndoFeedback = false
 
     private var recordings: [CalibrationPhase: CalibrationRecording] = [:]
     private var capture: CalibrationCapture?
@@ -42,14 +49,22 @@ final class MotionCalibrationController: ObservableObject {
     private var previewSmoother = PointerSmoother()
     private var lastPreviewFrame: Double?
     private var neutralSince: Double?
+    private var baseline = AppSettings()
+    private var feedbackUndo: [CalibrationReport] = []
+    private var lastTrialTimestamp: Double?
+    private var lastHitTarget: Int?
+    var previewGeometry: CalibrationPreviewGeometry { CalibrationPreviewGeometry(display: display, mode: previewMode) }
+    var roundNumber: Int { (report?.profile.refinementCount ?? 0) + 1 }
     var recordedNeutralRoll: Double? {
         guard let samples = recordings[.neutral]?.samples, let first = samples.first else { return nil }
         let values = samples.map { AngleMath.degrees(AngleMath.wrappedDelta($0.roll, first.roll)) }.sorted()
         return AngleMath.degrees(first.roll) + values[values.count / 2]
     }
 
-    func begin() {
+    func begin(using settings: AppSettings = AppSettings(), display: CalibrationDisplay = CalibrationDisplay()) {
         finish()
+        baseline = settings
+        self.display = display
         isActive = true
         phase = .neutral
         status = "Head control is paused. Use your mouse or keyboard for this guide."
@@ -63,6 +78,11 @@ final class MotionCalibrationController: ObservableObject {
         previewPipeline = nil; previewSmoother.reset(); differentiator.reset()
         readyToApply = false; neutralSince = nil
         rollOrigin = nil; live = CalibrationLiveReadout(); history = []; lastHostSample = -.infinity
+        lastPublish = -.infinity; previewMode = .precision
+        previewGate = .normal; previewReason = .none
+        previewLeftClicks = 0; previewRightClicks = 0
+        stepFeedback = nil; trial = CalibrationTrialMetrics(); feedbackUndo = []
+        feedbackChanges = []; canUndoFeedback = false; lastTrialTimestamp = nil; lastHitTarget = nil
     }
 
     func select(_ phase: CalibrationPhase) {
@@ -73,6 +93,7 @@ final class MotionCalibrationController: ObservableObject {
         readyToApply = false; neutralSince = nil
         rollOrigin = nil; differentiator.reset()
         issues = []
+        stepFeedback = recordings[phase].map { CalibrationAnalyzer.stepFeedback($0, recordings: recordings, baseline: baseline) }
         status = completed.contains(phase) ? "Sample recorded. Repeat it or continue." : phase.instruction
     }
 
@@ -93,6 +114,7 @@ final class MotionCalibrationController: ObservableObject {
             self.recordings[self.phase] = nil
             self.completed.remove(self.phase)
             self.progress = 0; self.rollOrigin = nil
+            self.stepFeedback = nil
             self.isRecording = true; self.status = self.phase.instruction
         }
     }
@@ -101,11 +123,58 @@ final class MotionCalibrationController: ObservableObject {
         guard isActive, !isRecording, countdown == 0, !sourceChanged else { return }
         let analysis = CalibrationAnalyzer.analyze(recordings, baseline: settings, screenWidth: screenWidth)
         issues = analysis.issues
-        report = analysis.report
-        if let report {
+        if var report = analysis.report {
+            report.profile.display = display
+            self.report = report
+            feedbackUndo = []; canUndoFeedback = false; feedbackChanges = []
             status = "Try these personal starting points in the preview, then apply when comfortable."
             resetPreview(report)
-        } else { status = "Some samples need another try. Your settings have not changed." }
+        } else { report = nil; status = "Some samples need another try. Your settings have not changed." }
+    }
+
+    func tuneCurrent(using settings: AppSettings, display: CalibrationDisplay, neutralRoll: Double) {
+        guard var profile = settings.calibrationProfile else { return }
+        begin(using: settings, display: display)
+        profile.display = display
+        let report = CalibrationReport(pointer: settings.pointer, gestures: settings.gestures, profile: profile, neutralRoll: neutralRoll)
+        self.report = report
+        status = "Try your saved controls, give feedback, and update without repeating capture."
+        resetPreview(report)
+    }
+
+    func setDisplay(_ display: CalibrationDisplay) {
+        let previous = self.display
+        self.display = display
+        if var report, previous != display {
+            report.profile.display = display
+            let gain = report.pointer.travelGain * display.width / max(320, previous.width)
+            if gain.isFinite { report.pointer.travelGain = min(120, max(report.pointer.precisionGain, gain)) }
+            self.report = report
+            resetPreview(report)
+        }
+    }
+
+    func setPreviewMode(_ mode: CalibrationPreviewMode) {
+        previewMode = mode; previewPosition = Vec2(260,110)
+        previewSmoother.reset(); lastPreviewFrame = nil; lastHitTarget = nil
+    }
+
+    func applyFeedback(_ feedback: CalibrationFeedback) {
+        guard let report, feedback.hasResponse, !sourceChanged else { return }
+        feedbackUndo.append(report)
+        feedbackUndo = Array(feedbackUndo.suffix(20))
+        let updated = CalibrationRefiner.refine(report, feedback: feedback, metrics: trial)
+        self.report = updated
+        feedbackChanges = updated.profile.refinements.last?.changes ?? []
+        canUndoFeedback = true
+        resetPreview(updated)
+    }
+
+    func undoFeedback() {
+        guard let report = feedbackUndo.popLast() else { return }
+        self.report = report; canUndoFeedback = !feedbackUndo.isEmpty
+        feedbackChanges = ["Restored the previous round's settings. Try them again before applying."]
+        resetPreview(report)
     }
 
     func connectionInterrupted() {
@@ -127,7 +196,7 @@ final class MotionCalibrationController: ObservableObject {
 
     func recenterPreview() {
         previewPosition = Vec2(260, 110)
-        if let report { resetPreview(report) }
+        previewSmoother.reset(); lastHitTarget = nil
     }
 
     private func resetPreview(_ report: CalibrationReport) {
@@ -136,6 +205,7 @@ final class MotionCalibrationController: ObservableObject {
         previewSmoother.reset(); lastPreviewFrame = nil
         readyToApply = false; neutralSince = nil
         previewPosition = Vec2(260, 110); previewLeftClicks = 0; previewRightClicks = 0
+        trial = CalibrationTrialMetrics(); lastTrialTimestamp = nil; lastHitTarget = nil
     }
 
     func push(_ sample: MotionSample, hostTime: Double) {
@@ -144,6 +214,7 @@ final class MotionCalibrationController: ObservableObject {
             if isRecording { capture?.push(sample) }
             readyToApply = false; neutralSince = nil
             previewSmoother.reset(); previewPipeline?.suspend()
+            previewGate = .frozen; previewReason = .invalidSignal
             status = "Invalid sensor data — waiting for a clean signal."
             return
         }
@@ -178,17 +249,22 @@ final class MotionCalibrationController: ObservableObject {
                 } else if capture.isComplete {
                     recordings[phase] = capture.recording
                     completed.insert(phase); isRecording = false
-                    status = "Sample captured. Continue, or repeat if the movement felt unnatural."
+                    stepFeedback = CalibrationAnalyzer.stepFeedback(capture.recording, recordings: recordings, baseline: baseline)
+                    status = "Sample captured. Review its feedback before continuing."
                 }
             }
         }
         if var pipeline = previewPipeline {
             let update = pipeline.process(sample, enabled: [.tiltLeft, .tiltRight])
             previewPipeline = pipeline; previewGate = update.gate
+            previewReason = update.gateReason
+            let dt = sample.timestamp - (lastTrialTimestamp ?? sample.timestamp)
+            trial.observe(dt: dt, gate: update.gate, reason: update.gateReason)
+            if sample.timestamp > (lastTrialTimestamp ?? -.infinity) { lastTrialTimestamp = sample.timestamp }
             if update.holdingPointer { previewSmoother.reset() }
             previewSmoother.setTarget(update.targetVelocity, at: hostTime)
-            if update.gesture?.gesture == .tiltLeft { previewLeftClicks += 1 }
-            if update.gesture?.gesture == .tiltRight { previewRightClicks += 1 }
+            if update.gesture?.gesture == .tiltLeft { previewLeftClicks += 1; trial.leftClicks += 1 }
+            if update.gesture?.gesture == .tiltRight { previewRightClicks += 1; trial.rightClicks += 1 }
             let neutral = abs(pipeline.gestures.relativeRoll(AngleMath.degrees(sample.roll)))
                 < min(pipeline.gestures.settings.angle(for: .tiltLeft), pipeline.gestures.settings.angle(for: .tiltRight)) * 0.5
             let quiet = update.rates.map { max(abs($0.yaw), abs($0.pitch), abs($0.roll)) < 5 } ?? false
@@ -205,6 +281,7 @@ final class MotionCalibrationController: ObservableObject {
             live.fresh = false
             previewSmoother.reset()
             previewPipeline?.suspend()
+            previewGate = .frozen; previewReason = .stale
             readyToApply = false; neutralSince = nil
             if isRecording { status = "Motion paused — recording resumes when samples return." }
         }
@@ -212,7 +289,14 @@ final class MotionCalibrationController: ObservableObject {
         let dt = min(max(now - (lastPreviewFrame ?? now), 0), 0.05)
         lastPreviewFrame = now
         let delta = previewSmoother.step(now: now, dt: dt, smoothing: report.pointer.smoothing)
-        previewPosition = Vec2(min(512, max(8, previewPosition.x + delta.x)),
-                               min(212, max(8, previewPosition.y + delta.y)))
+        let geometry = previewGeometry
+        previewPosition = geometry.clamp(previewPosition + delta * geometry.scale)
+        let targets = geometry.targets
+        if let lastHitTarget, previewPosition.distance(to: targets[lastHitTarget]) > 22 { self.lastHitTarget = nil }
+        if lastHitTarget == nil, let index = targets.firstIndex(where: { previewPosition.distance(to: $0) <= 13 }) {
+            lastHitTarget = index
+            if previewMode == .precision, index != 0 && index != 3 { trial.nearTargets += 1 }
+            if previewMode == .travel, index == 0 || index == 3 { trial.farTargets += 1 }
+        }
     }
 }

@@ -5,12 +5,14 @@ public struct HeadControlUpdate: Sendable {
     public var rawRates: AngularRates?
     public var targetVelocity: Vec2
     public var gate: InputGateState
+    public var gateReason: InputGateReason
     public var gesture: GestureEvent?
     public var tiltStartTime: TimeInterval?
     public var tiltProgress: Double?
     public var holdingPointer: Bool
+    public var awaitingTiltNeutral: Bool
     public var accepted: Bool
-    public var allowsAutomaticClicks: Bool { accepted && gate.allowsClicks && !holdingPointer }
+    public var allowsAutomaticClicks: Bool { accepted && gate.allowsClicks && !holdingPointer && !awaitingTiltNeutral }
 }
 
 /// Pure coordinator, replayable with recorded or synthetic observations. No events,
@@ -25,6 +27,7 @@ public struct HeadControlPipeline: Sendable {
     private var lastSample: MotionSample?
     private var tiltWasHeld = false
     private var tiltSettledSince: TimeInterval?
+    private var postureCanceledTilt = false
 
     public init(pointer: PointerSettings = PointerSettings(), gestures: GestureSettings = GestureSettings()) {
         pointerSettings = pointer
@@ -35,15 +38,17 @@ public struct HeadControlPipeline: Sendable {
         estimator.reset(); gate.reset(); differentiator.reset(); response.reset()
         if !preservingGestures { gestures.reset() }
         lastSample = nil; tiltWasHeld = false; tiltSettledSince = nil
+        postureCanceledTilt = false
     }
 
     public mutating func cancelGestures() {
         gestures.cancelPendingGestures()
         response.reset()
+        postureCanceledTilt = false
     }
 
     public mutating func suspend() {
-        gate.freeze(); cancelGestures(); estimator.reset(); differentiator.reset()
+        gate.freeze(reason: .stale); cancelGestures(); estimator.reset(); differentiator.reset()
         lastSample = nil
     }
 
@@ -72,13 +77,21 @@ public struct HeadControlPipeline: Sendable {
         let rates = pointerSettings.filterMode == .kalman ? estimate.rates : raw
         var gesture: GestureEvent?
         if reliable {
-            if state != .normal { gestures.cancelPendingGestures() }
+            if state != .normal {
+                gestures.cancelPendingGestures()
+                if gate.reason == .posture {
+                    postureCanceledTilt = true
+                    tiltWasHeld = false
+                    tiltSettledSince = nil
+                }
+            }
             gesture = gestures.process(sample, enabled: state == .normal ? enabled : [])
         } else { gestures.cancelPendingGestures() }
 
         let tiltEnabled = enabled.contains(.tiltLeft) || enabled.contains(.tiltRight)
         let tiltHeld = gestures.tiltStartTime != nil
-            || (state == .normal && tiltEnabled && gestures.tiltWaitingForNeutral)
+            || (state == .normal && tiltEnabled && gestures.tiltWaitingForNeutral && !postureCanceledTilt)
+        if !gestures.tiltWaitingForNeutral { postureCanceledTilt = false }
         if tiltHeld { tiltWasHeld = true; tiltSettledSince = nil }
         else if tiltWasHeld {
             // Swallow the return-to-neutral motion as well as the click itself.
@@ -96,11 +109,11 @@ public struct HeadControlPipeline: Sendable {
             target = pointerSettings.filterMode == .legacy
                 ? PointerMapper.cursorVelocity(rates: rates, settings: pointerSettings)
                 : response.velocity(rates: rates, settings: pointerSettings, mayLearnNoise: state == .normal)
-            if state == .cautious { target = target * bounded(pointerSettings.repositioning.cautiousGain, 0.35, 0, 1) }
+            if state == .cautious { target = target * bounded(pointerSettings.repositioning.cautiousGain, 0.6, 0, 1) }
         } else { response.reset() }
         return HeadControlUpdate(rates: rates, rawRates: raw, targetVelocity: target,
-            gate: state, gesture: state == .normal && reliable ? gesture : nil,
+            gate: state, gateReason: gate.reason, gesture: state == .normal && reliable ? gesture : nil,
             tiltStartTime: gestures.tiltStartTime, tiltProgress: gestures.tiltProgress,
-            holdingPointer: holding, accepted: reliable)
+            holdingPointer: holding, awaitingTiltNeutral: tiltEnabled && gestures.tiltWaitingForNeutral, accepted: reliable)
     }
 }

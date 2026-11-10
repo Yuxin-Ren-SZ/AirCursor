@@ -20,8 +20,8 @@ public struct PointerSettings: Codable, Equatable, Sendable {
     public var filterMode: MotionFilterMode = .kalman
     public var filter = KalmanSettings()
     public var repositioning = RepositioningSettings()
-    public var precisionGain: Double = 14
-    public var travelGain: Double = 56
+    public var precisionGain: Double = 18
+    public var travelGain: Double = 48
     public var precisionSpeed: Double = 5
     public var transitionSpeed: Double = 35
     public var adaptiveDeadzone: Bool = true
@@ -130,7 +130,7 @@ public struct DwellSettings: Codable, Equatable, Sendable {
 
 public struct AppSettings: Codable, Equatable, Sendable {
     /// Bumped when defaults change in a way existing users should receive.
-    public static let currentVersion = 4
+    public static let currentVersion = 5
     public var version: Int = AppSettings.currentVersion
 
     public var pointer = PointerSettings()
@@ -209,6 +209,27 @@ extension AppSettings {
             if s.pointer.smoothing == 0.55 { s.pointer.smoothing = PointerSettings().smoothing }
             if s.gestures.tiltAngle == 22 { s.gestures.tiltAngle = GestureSettings().tiltAngle }
             if s.gestures.tiltHold == 0.3 { s.gestures.tiltHold = GestureSettings().tiltHold }
+        }
+        if s.version < 5 {
+            // Retain custom gains. Fix the prior automatic fit only when the fine
+            // gain still matches its original 70 points/s calculation.
+            if var profile = s.calibrationProfile, profile.algorithmVersion < 2 {
+                let oldFit = bounded(70 / max(1, profile.slowSpeed - s.pointer.deadzone * 0.65), 14, 4, 40)
+                if abs(s.pointer.precisionGain - oldFit) < 0.001 {
+                    s.pointer.precisionGain = min(60, s.pointer.precisionGain * 90 / 70)
+                    s.pointer.travelGain = max(s.pointer.precisionGain, s.pointer.travelGain * 0.75)
+                }
+                profile.algorithmVersion = 2
+                profile.notes.append("Updated the original automatic fit: closer slow/fast gains and more conservative posture detection. Fine-tune these in preview.")
+                s.calibrationProfile = profile
+            } else if s.calibrationProfile == nil {
+                if s.pointer.precisionGain == 14 { s.pointer.precisionGain = 18 }
+                if s.pointer.travelGain == 56 { s.pointer.travelGain = 48 }
+            }
+            s.pointer.repositioning.cautionAcceleration = max(s.pointer.repositioning.cautionAcceleration, 0.06)
+            s.pointer.repositioning.freezeAcceleration = max(s.pointer.repositioning.freezeAcceleration, 0.18)
+            s.pointer.repositioning.cautiousGain = max(s.pointer.repositioning.cautiousGain, 0.6)
+            s.pointer.repositioning.settleTime = min(s.pointer.repositioning.settleTime, 0.12)
         }
         s.version = AppSettings.currentVersion
         return s

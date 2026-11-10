@@ -42,7 +42,7 @@ struct CalibrationView: View {
             }
         }
         .onReceive(frames) { _ in calibration.advance(now: ProcessInfo.processInfo.systemUptime) }
-        .onAppear { controller.windowVisibilityChanged() }
+        .onAppear { controller.windowVisibilityChanged(); controller.updateCalibrationDisplay() }
         .onDisappear {
             controller.finishCalibration()
             controller.windowVisibilityChanged()
@@ -60,7 +60,10 @@ struct CalibrationView: View {
             if let profile = controller.settings.calibrationProfile {
                 Text("Last calibration: \(profile.date.formatted(date: .abbreviated, time: .shortened))")
                     .foregroundStyle(.secondary)
+                Button("Fine-tune saved controls without re-recording") { controller.beginCalibration(tuneSaved: true) }
+                    .disabled(!controller.settings.developerModeEnabled)
             }
+            displayInfo
             if !controller.settings.developerModeEnabled {
                 Text("Enable Developer mode in Settings → Shortcuts & General to begin.").foregroundStyle(.orange)
             }
@@ -100,6 +103,9 @@ struct CalibrationView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(calibration.phase.title).font(.title.bold())
             Text(calibration.phase.instruction).font(.title3).fixedSize(horizontal: false, vertical: true)
+            CalibrationMotionAnimation(phase: calibration.phase,
+                                       recordingTime: calibration.isRecording ? calibration.progress * calibration.phase.duration : nil,
+                                       countdown: calibration.countdown)
             Text(calibration.status).foregroundStyle(calibration.live.fresh ? Color.secondary : .orange)
             if calibration.countdown > 0 {
                 Text("\(calibration.countdown)").font(.system(size: 54, weight: .semibold, design: .rounded))
@@ -113,13 +119,22 @@ struct CalibrationView: View {
             }
             .font(.caption).foregroundStyle(.secondary)
             liveSignals
+            if let feedback = calibration.stepFeedback {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(feedback.title, systemImage: feedback.needsRepeat ? "arrow.clockwise" : "checkmark.circle")
+                        .font(.headline)
+                    Text(feedback.detail).font(.callout)
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(feedback.needsRepeat ? Color.orange.opacity(0.1) : Color.green.opacity(0.08)))
+            }
             HStack {
                 Button(calibration.completed.contains(calibration.phase) ? "Repeat sample" : "Record sample") { calibration.startRecording() }
                     .disabled(calibration.isRecording || calibration.countdown > 0)
                 Spacer()
                 Button(calibration.completed.count == CalibrationPhase.allCases.count ? "Review settings" : "Continue") { nextStep() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!calibration.completed.contains(calibration.phase) || calibration.isRecording || calibration.countdown > 0)
+                    .disabled(!calibration.completed.contains(calibration.phase) || calibration.isRecording || calibration.countdown > 0 || calibration.stepFeedback?.needsRepeat == true)
                     .keyboardShortcut(.defaultAction)
             }
             Text("Start each recording upright. A two-second countdown gives you time to settle. Missing sensor data pauses recording time.")
@@ -171,9 +186,14 @@ struct CalibrationView: View {
 
     private func review(_ report: CalibrationReport) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Try your personal settings").font(.title.bold())
+            Text("Try, rate, and refine · round \(calibration.roundNumber)").font(.title.bold())
             Text("Use slow turns for the nearby targets, fast turns for the outer targets, and small left/right tilts to click. This preview only moves the dot below.")
                 .foregroundStyle(.secondary)
+            displayInfo
+            Picker("Preview scale", selection: Binding(get: { calibration.previewMode }, set: { calibration.setPreviewMode($0) })) {
+                Text("Fine control · 1:1").tag(CalibrationPreviewMode.precision)
+                Text("Whole-display travel").tag(CalibrationPreviewMode.travel)
+            }.pickerStyle(.segmented)
             preview
             HStack {
                 Text("Left clicks: \(calibration.previewLeftClicks)")
@@ -182,13 +202,15 @@ struct CalibrationView: View {
                 Button("Center preview") { calibration.recenterPreview() }
             }.font(.caption)
             if calibration.previewGate != .normal {
-                Text(calibration.previewGate == .frozen ? "Preview paused while you settle." : "Posture adjustment detected: slower movement, clicks paused.")
+                Text(calibration.previewReason.message)
                     .font(.caption).foregroundStyle(.orange)
             }
             if !calibration.readyToApply {
                 Text("Return upright and hold still briefly to apply safely.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            CalibrationFeedbackPanel().environmentObject(calibration)
+            DisclosureGroup("Measured parameters and proposed settings") {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 9) {
                 GridRow { Text("Setting"); Text("Current"); Text("Suggested") }.font(.caption.bold()).foregroundStyle(.secondary)
                 change("Resting dead zone", controller.settings.pointer.deadzone, report.pointer.deadzone, suffix: "°/s")
@@ -208,10 +230,11 @@ struct CalibrationView: View {
                         report.profile.slowSpeed, report.profile.fastSpeed, report.profile.precisionMaximumSpeed, report.profile.travelMinimumSpeed))
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(report.profile.notes, id: \.self) { Text($0).font(.callout).foregroundStyle(.orange) }
+            }
             DisclosureGroup("Fine-tune the preview") {
                 VStack(spacing: 12) {
-                    LabeledSlider(title: "Precision gain", value: pointerBinding(\.precisionGain), range: 4...40, format: { String(format: "%.1f", $0) })
-                    LabeledSlider(title: "Travel gain", value: pointerBinding(\.travelGain), range: 20...120, format: { String(format: "%.1f", $0) })
+                    LabeledSlider(title: "Precision gain", value: pointerBinding(\.precisionGain), range: 4...60, format: { String(format: "%.1f", $0) })
+                    LabeledSlider(title: "Travel gain", value: pointerBinding(\.travelGain), range: 4...120, format: { String(format: "%.1f", $0) })
                     LabeledSlider(title: "Left tilt", value: tiltBinding(.tiltLeft), range: report.profile.minimumTiltAngle...max(20, report.profile.minimumTiltAngle+1), step: 0.1, format: { String(format: "%.1f°", $0) })
                     LabeledSlider(title: "Right tilt", value: tiltBinding(.tiltRight), range: report.profile.minimumTiltAngle...max(20, report.profile.minimumTiltAngle+1), step: 0.1, format: { String(format: "%.1f°", $0) })
                 }.padding(.top, 10)
@@ -232,21 +255,35 @@ struct CalibrationView: View {
     }
 
     private var preview: some View {
-        ZStack {
+        let geometry = calibration.previewGeometry
+        return ZStack {
             RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.08))
-            ForEach([50.0, 200, 320, 470], id: \.self) { x in
+            Rectangle().stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                .frame(width: geometry.size.x, height: geometry.size.y)
+                .position(x: 260, y: 110)
+            ForEach(Array(geometry.targets.enumerated()), id: \.offset) { _, point in
                 Circle().strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 2)
-                    .frame(width: 26, height: 26).position(x: x, y: 110)
-            }
-            ForEach([40.0, 180], id: \.self) { y in
-                Circle().strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 2)
-                    .frame(width: 26, height: 26).position(x: 260, y: y)
+                    .frame(width: 26, height: 26).position(x: point.x, y: point.y)
             }
             Circle().fill(Color.accentColor).frame(width: 12, height: 12)
                 .position(x: calibration.previewPosition.x, y: calibration.previewPosition.y)
         }
         .frame(width: 520, height: 220)
         .accessibilityLabel("Virtual head-controlled pointer preview")
+    }
+
+    private var displayInfo: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(calibration.display.name).font(.callout.weight(.medium))
+                Text(String(format: "%.0f × %.0f points · %d × %d pixels", calibration.display.width, calibration.display.height,
+                            calibration.display.pixelWidth, calibration.display.pixelHeight))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Use display under cursor") { controller.updateCalibrationDisplay() }
+                .controlSize(.small)
+        }
     }
 
     private func change(_ title: String, _ old: Double, _ new: Double, suffix: String) -> some View {

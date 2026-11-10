@@ -134,8 +134,10 @@ See [motion processing and tuning](docs/motion-control.md) for filter parameters
 
 For personal tuning, enable **Developer mode** under **Settings → Shortcuts & General**.
 The [guided calibration](docs/calibration.md) records slow/fast pointing, small comfortable
-click tilts and posture adjustments, then lets you try the suggestions in a virtual pointer
-preview. Apply saves a personal profile; Undo restores the previous settings.
+click tilts and posture adjustments with animated ear-dot guides. Try the suggestions
+in a display-aware virtual pointer preview, rate each control and repeat feedback
+rounds without re-recording. Apply saves a personal profile; Undo restores the previous
+settings. Saved profiles can also be fine-tuned directly.
 
 ## Contributing
 

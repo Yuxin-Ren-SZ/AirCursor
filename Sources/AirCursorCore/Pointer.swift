@@ -95,8 +95,8 @@ public struct PointerResponse: Sendable {
         guard active, magnitude > 0 else { return .zero }
         let effective = max(0, magnitude - deadzone * 0.65)
         let knee = deadzone > 0 ? min(1, effective / max(deadzone * 0.7, 0.01)) : 1
-        let precision = bounded(settings.precisionGain, 14, 1, 100)
-        let travel = max(precision, bounded(settings.travelGain, 56, 1, 200))
+        let precision = bounded(settings.precisionGain, 18, 1, 100)
+        let travel = max(precision, bounded(settings.travelGain, 48, 1, 200))
         let transition = bounded(settings.transitionSpeed, 35, 0.5, 120)
         let precisionSpeed = bounded(settings.precisionSpeed, 5, 0.5, 100)
         let t = min(1, max(0, (effective - precisionSpeed) / transition))

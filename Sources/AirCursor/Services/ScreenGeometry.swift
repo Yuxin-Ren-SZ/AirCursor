@@ -1,9 +1,11 @@
 import AppKit
 import CoreGraphics
+import AirCursorCore
 
 /// Display layout in global CG coordinates (origin top-left of the main display).
 final class ScreenGeometry {
     private(set) var displays: [CGRect] = []
+    private var displayIDs: [CGDirectDisplayID] = []
 
     init() { refresh() }
 
@@ -11,11 +13,23 @@ final class ScreenGeometry {
         var count: UInt32 = 0
         guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
             displays = [CGDisplayBounds(CGMainDisplayID())]
+            displayIDs = [CGMainDisplayID()]
             return
         }
         var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
         CGGetActiveDisplayList(count, &ids, &count)
-        displays = ids.prefix(Int(count)).map(CGDisplayBounds)
+        displayIDs = Array(ids.prefix(Int(count)))
+        displays = displayIDs.map(CGDisplayBounds)
+    }
+
+    func calibrationDisplay(containing point: CGPoint) -> CalibrationDisplay {
+        let bounds = display(containing: point)
+        let index = displays.firstIndex(of: bounds) ?? 0
+        let id = displayIDs.indices.contains(index) ? displayIDs[index] : CGMainDisplayID()
+        let screen = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id }
+        return CalibrationDisplay(id: String(id), name: screen?.localizedName ?? "Display",
+            width: Double(screen?.frame.width ?? bounds.width), height: Double(screen?.frame.height ?? bounds.height),
+            pixelWidth: CGDisplayPixelsWide(id), pixelHeight: CGDisplayPixelsHigh(id), scale: Double(screen?.backingScaleFactor ?? 1))
     }
 
     func display(containing p: CGPoint) -> CGRect {
